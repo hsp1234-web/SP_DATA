@@ -46,17 +46,42 @@ class TransformationPipeline:
 
         print(f"TransformationPipeline initialized. Manifest: {self.manifest_db_path}, RawLake: {self.raw_lake_db_path}, ProcessedDB: {self.processed_db_path}, Schemas: {self.schema_config_path}")
 
+    def find_pending_files(self) -> list[dict]:
+        """
+        Queries the manifest.db for all records with the status 'loaded_to_raw_lake'.
+
+        Returns:
+            list[dict]: A list of dictionaries, where each dictionary represents a record.
+                        Keys are column names.
+        """
+        try:
+            cursor = self.manifest_con.execute(
+                "SELECT file_hash, file_path, status, registration_timestamp FROM file_manifest WHERE status = 'loaded_to_raw_lake'"
+            )
+            results = cursor.fetchall()
+            if not results:
+                return []
+
+            # Get column names from cursor description
+            column_names = [desc[0] for desc in cursor.description]
+
+            # Convert list of tuples to list of dictionaries
+            return [dict(zip(column_names, row)) for row in results]
+        except duckdb.Error as e:
+            print(f"Database error in find_pending_files: {e}")
+            return []
+
     def run(self):
         try:
-            pending_files = self.manifest_con.execute(
-                "SELECT file_hash, file_path FROM file_manifest WHERE status = 'loaded_to_raw_lake'"
-            ).fetchall()
+            pending_files_data = self.find_pending_files()
 
-            if not pending_files:
+            if not pending_files_data:
                 print("目前沒有待處理的檔案。")
                 return
 
-            for file_hash, file_path in pending_files:
+            for file_data in pending_files_data:
+                file_hash = file_data['file_hash']
+                file_path = file_data['file_path']
                 print(f"找到待處理檔案：{file_path} (Hash: {file_hash[:8]})")
                 # Placeholder for further processing logic:
                 # 1. Read raw_content from raw_lake_con using file_hash
@@ -100,6 +125,7 @@ class TransformationPipeline:
         print("TransformationPipeline connections closed.")
 
 if __name__ == '__main__':
+    import json # Moved import here for clarity within __main__
     # Basic example for quick testing.
     # This requires setting up a dummy config, schema file, and dummy DBs.
 
@@ -192,4 +218,3 @@ paths:
         if example_config_path.exists(): example_config_path.unlink(missing_ok=True)
         if example_schema_path.exists(): example_schema_path.unlink(missing_ok=True)
         # db files will be cleaned on next run or manually
-import json # ensure json is imported for the __main__ block if not already at top
