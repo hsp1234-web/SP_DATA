@@ -21,9 +21,9 @@ class ManifestManager:
         create_table_sql = """
         CREATE TABLE IF NOT EXISTS file_manifest (
             file_hash VARCHAR PRIMARY KEY,
-            source_path VARCHAR,
-            status VARCHAR,
-            ingestion_timestamp TIMESTAMP
+            file_path VARCHAR,
+            registration_timestamp TIMESTAMP DEFAULT current_timestamp,
+            status VARCHAR DEFAULT 'registered'
         );
         """
         self.con.execute(create_table_sql)
@@ -54,43 +54,37 @@ class ManifestManager:
         Raises:
             duckdb.ConstraintException: If the file_hash (primary key) already exists.
         """
-        current_timestamp = datetime.datetime.now()
+        current_timestamp = datetime.datetime.now() # Explicit timestamp for clarity if needed elsewhere
         insert_sql = """
-        INSERT INTO file_manifest (file_hash, source_path, status, ingestion_timestamp)
+        INSERT INTO file_manifest (file_hash, file_path, registration_timestamp, status)
         VALUES (?, ?, ?, ?);
         """
+        # Note: 'status' and 'registration_timestamp' will use DEFAULT if not provided or if NULL is inserted
+        # Depending on exact DB behavior, explicitly providing 'registered' and current_timestamp is safer.
         try:
-            self.con.execute(insert_sql, [file_hash, source_path, 'registered', current_timestamp])
+            self.con.execute(insert_sql, [file_hash, source_path, current_timestamp, 'registered'])
             self.con.commit() # Commit the transaction
         except duckdb.Error as e: # Catch DuckDB specific errors
-            # It's good practice to roll back on error, though for simple inserts
-            # and auto-commit behavior of DuckDB, it might not be strictly necessary
-            # self.con.rollback() # DuckDB connection object doesn't have rollback directly, managed by transactions
             raise e # Re-raise the exception to be handled by the caller
 
-    def update_file_status(self, file_hash: str, status: str):
+    def update_status(self, file_hash: str, new_status: str):
         """
         Updates the status of an existing file in the manifest.
 
         Args:
             file_hash: The SHA256 hash of the file to update.
-            status: The new status (e.g., 'processed', 'error').
-
-        Returns:
-            True if the update was successful, False if the hash was not found.
+            new_status: The new status (e.g., 'processed', 'error').
         """
-        if not self.hash_exists(file_hash):
-            return False
-
-        update_sql = "UPDATE file_manifest SET status = ? WHERE file_hash = ?;"
         try:
-            self.con.execute(update_sql, [status, file_hash])
+            self.con.execute(
+                "UPDATE file_manifest SET status = ? WHERE file_hash = ?",
+                (new_status, file_hash)
+            )
             self.con.commit()
-            return True
-        except duckdb.Error as e:
-            # Log error or handle as needed
-            print(f"Error updating status for {file_hash}: {e}")
-            return False
+            # print(f"Status updated to '{new_status}' for file_hash: {file_hash}") # Optional log
+        except Exception as e:
+            print(f"Error updating status for {file_hash} to {new_status}: {e}")
+            # Consider re-raising or specific error handling
 
     def get_file_status(self, file_hash: str) -> str | None:
         """
@@ -128,7 +122,7 @@ if __name__ == '__main__':
 
     # Test case 2: Update status
     print(f"Updating status of {file_hash_1} to 'processed'")
-    manager.update_file_status(file_hash_1, 'processed')
+    manager.update_status(file_hash_1, 'processed') # Changed from update_file_status
     print(f"Status of {file_hash_1}: {manager.get_file_status(file_hash_1)}")
 
     # Test case 3: Try to register the same file (should raise ConstraintException)
@@ -144,7 +138,8 @@ if __name__ == '__main__':
     print(f"Status of {non_existent_hash}: {manager.get_file_status(non_existent_hash)}")
 
     # Test case 5: Update status for non-existent hash
-    print(f"Attempting to update status for {non_existent_hash}: {manager.update_file_status(non_existent_hash, 'processed')}")
+    print(f"Attempting to update status for {non_existent_hash}:")
+    manager.update_status(non_existent_hash, 'processed') # Changed from update_file_status, no return value to print
 
     manager.close()
     print("ManifestManager example usage complete.")

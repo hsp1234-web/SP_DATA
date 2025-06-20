@@ -68,6 +68,7 @@ class IngestionPipeline:
                 else:
                     self.manifest_manager.register_file(file_hash, str(file_path))
                     self.raw_loader.save_file(file_path, file_hash)
+                    self.manifest_manager.update_status(file_hash, 'loaded_to_raw_lake')
                     print(f"新檔案發現：{file_name} (Hash: {file_hash[:8]}...), 已登錄 Manifest 並存入 Raw Lake。")
                     added_count += 1
         except FileNotFoundError as e:
