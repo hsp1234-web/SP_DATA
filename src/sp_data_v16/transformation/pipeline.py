@@ -1,6 +1,10 @@
 import duckdb
 import pathlib
+import pandas as pd
 from .schema_manager import SchemaManager
+from .raw_lake_reader import RawLakeReader
+from .parser import DataParser
+from src.sp_data_v16.ingestion.manifest import ManifestManager # Assuming ManifestManager handles its own connection
 from src.sp_data_v16.core.config import load_config
 
 class TransformationPipeline:
@@ -39,67 +43,151 @@ class TransformationPipeline:
 
 
         self.manifest_con = duckdb.connect(database=str(self.manifest_db_path), read_only=False)
-        self.raw_lake_con = duckdb.connect(database=str(self.raw_lake_db_path), read_only=True)
+        # self.raw_lake_con is effectively replaced by RawLakeReader instance
+        # self.raw_lake_con = duckdb.connect(database=str(self.raw_lake_db_path), read_only=True) # Keep for now if other methods use it
         self.processed_con = duckdb.connect(database=str(self.processed_db_path), read_only=False)
 
         self.schema_manager = SchemaManager(schema_path=str(self.schema_config_path))
+        self.parser = DataParser()
 
-        print(f"TransformationPipeline initialized. Manifest: {self.manifest_db_path}, RawLake: {self.raw_lake_db_path}, ProcessedDB: {self.processed_db_path}, Schemas: {self.schema_config_path}")
+        try:
+            self.raw_lake_reader = RawLakeReader(db_path=str(self.raw_lake_db_path))
+        except ConnectionError as e:
+            print(f"Error initializing RawLakeReader: {e}")
+            # Depending on desired behavior, either re-raise or set to None and handle in run()
+            raise  # Re-raising for now
+
+        try:
+            # ManifestManager will create its own connection.
+            # It's designed to be independent or take an existing connection.
+            # For this integration, let it manage its own based on path.
+            self.manifest_manager = ManifestManager(db_path=str(self.manifest_db_path))
+        except ConnectionError as e: # Assuming ManifestManager might raise ConnectionError
+            print(f"Error initializing ManifestManager: {e}")
+            raise # Re-raising for now
+
+        # Note: self.raw_lake_con is still present from original code.
+        # If RawLakeReader completely replaces its functionality, self.raw_lake_con could be removed.
+        # For now, let's assume it might be used by other parts of the class not being modified here.
+        # If not, it should be cleaned up. The RawLakeReader does what raw_lake_con was doing for reading raw_files.
+        # Let's remove the direct self.raw_lake_con initialization for now as RawLakeReader handles it.
+        # self.raw_lake_con = duckdb.connect(database=str(self.raw_lake_db_path), read_only=True)
+
+        print(f"TransformationPipeline initialized. Manifest: {self.manifest_db_path}, RawLake (via Reader): {self.raw_lake_db_path}, ProcessedDB: {self.processed_db_path}, Schemas: {self.schema_config_path}")
+
+    def find_pending_files(self) -> list[dict]:
+        """
+        Queries the manifest.db for all records with the status 'loaded_to_raw_lake'.
+
+        Returns:
+            list[dict]: A list of dictionaries, where each dictionary represents a record.
+                        Keys are column names.
+        """
+        try:
+            cursor = self.manifest_con.execute(
+                "SELECT file_hash, file_path, status, registration_timestamp FROM file_manifest WHERE status = 'loaded_to_raw_lake'"
+            )
+            results = cursor.fetchall()
+            if not results:
+                return []
+
+            # Get column names from cursor description
+            column_names = [desc[0] for desc in cursor.description]
+
+            # Convert list of tuples to list of dictionaries
+            return [dict(zip(column_names, row)) for row in results]
+        except duckdb.Error as e:
+            print(f"Database error in find_pending_files: {e}")
+            return []
 
     def run(self):
         try:
-            pending_files = self.manifest_con.execute(
-                "SELECT file_hash, file_path FROM file_manifest WHERE status = 'loaded_to_raw_lake'"
-            ).fetchall()
+            pending_files_data = self.find_pending_files()
 
-            if not pending_files:
+            if not pending_files_data:
                 print("目前沒有待處理的檔案。")
                 return
 
-            for file_hash, file_path in pending_files:
-                print(f"找到待處理檔案：{file_path} (Hash: {file_hash[:8]})")
-                # Placeholder for further processing logic:
-                # 1. Read raw_content from raw_lake_con using file_hash
-                #    raw_content_result = self.raw_lake_con.execute(
-                #        "SELECT raw_content FROM raw_files WHERE file_hash = ?", (file_hash,)
-                #    ).fetchone()
-                #    if not raw_content_result:
-                #        print(f"Warning: Raw content for {file_hash} not found in Raw Lake. Skipping.")
-                #        continue
-                #    raw_content = raw_content_result[0]
-                #
-                # 2. Identify schema
-                #    schema_name = self.schema_manager.identify_schema_from_content(raw_content)
-                #    if not schema_name:
-                #        print(f"Warning: Could not identify schema for {file_path} (Hash: {file_hash[:8]}). Skipping.")
-                #        # Optionally, update manifest status to 'schema_not_identified' or similar
-                #        # self.manifest_con.execute("UPDATE file_manifest SET status = 'schema_not_identified' WHERE file_hash = ?", (file_hash,))
-                #        # self.manifest_con.commit()
-                #        continue
-                #    print(f"Identified schema '{schema_name}' for {file_path}")
-                #
-                # 3. Transform and load to processed_con based on schema_name
-                #    # This part will be highly dependent on the actual schema definitions and transformation logic
-                #    print(f"Placeholder: Transform and load data for {file_path} using schema {schema_name}.")
-                #
-                # 4. Update manifest status
-                #    # Example: self.manifest_con.execute("UPDATE file_manifest SET status = 'processed' WHERE file_hash = ?", (file_hash,))
-                #    # self.manifest_con.commit()
-                #    print(f"Placeholder: Updated manifest status for {file_hash} to 'processed'.")
-                pass # End of placeholder
+            for file_data in pending_files_data:
+                file_hash = file_data['file_hash']
+                file_path = file_data['file_path']
+                print(f"\nProcessing file: {file_path} (Hash: {file_hash[:8]})")
+
+                # 1. Get Raw Content
+                raw_content = self.raw_lake_reader.get_raw_content(file_hash)
+                if raw_content is None:
+                    print(f"Error: Raw content not found for {file_hash} in Raw Lake. Skipping.")
+                    self.manifest_manager.update_status(file_hash, 'parse_error_no_content')
+                    continue
+
+                # 2. Identify Schema
+                schema_name = self.schema_manager.identify_schema_from_content(raw_content)
+                if schema_name is None:
+                    print(f"Warning: Could not identify schema for {file_path} (Hash: {file_hash[:8]}). Skipping.")
+                    self.manifest_manager.update_status(file_hash, 'parse_error_schema_not_identified')
+                    continue
+
+                schema_definition = self.schema_manager.schemas.get(schema_name)
+                if schema_definition is None: # Should be rare if identify_schema_from_content works
+                    print(f"Error: Schema definition not found for identified schema '{schema_name}'. Skipping.")
+                    self.manifest_manager.update_status(file_hash, 'parse_error_schema_missing')
+                    continue
+                print(f"Identified schema '{schema_name}' for {file_path}")
+
+                # 3. Parse Data
+                dataframe = self.parser.parse(raw_content, schema_definition)
+                if dataframe is not None:
+                    print(f"Successfully parsed {file_path} using schema {schema_name}.")
+                    print("DataFrame head:")
+                    print(dataframe.head())
+                    # Placeholder: Further processing/loading to processed_con would happen here
+                    # For now, just update status to 'parsed'
+                    self.manifest_manager.update_status(file_hash, 'parsed')
+                    print(f"Updated manifest status for {file_hash} to 'parsed'.")
+                else:
+                    print(f"Error: Failed to parse {file_path} (Hash: {file_hash[:8]}). Skipping.")
+                    self.manifest_manager.update_status(file_hash, 'parse_error_parser_failed')
+                    # No continue here, already at end of loop for this item
+
         finally:
             self.close()
 
     def close(self):
+        # Ensure connections are closed in a specific order or handle dependencies if any
+        # For DuckDB, independent close calls are usually fine.
+
         if hasattr(self, 'manifest_con') and self.manifest_con:
-            self.manifest_con.close()
-        if hasattr(self, 'raw_lake_con') and self.raw_lake_con:
-            self.raw_lake_con.close()
+            try:
+                # print("Attempting to close manifest_con") # Debug print
+                self.manifest_con.close()
+                # print("manifest_con closed.") # Debug print
+            except duckdb.Error as e:
+                print(f"Error closing manifest_con: {e}")
+
+        if hasattr(self, 'raw_lake_reader') and self.raw_lake_reader:
+            # print("Attempting to close raw_lake_reader") # Debug print
+            self.raw_lake_reader.close() # RawLakeReader's close method handles its own checks
+            # print("raw_lake_reader closed.") # Debug print
+
+        if hasattr(self, 'manifest_manager') and self.manifest_manager:
+            # print("Attempting to close manifest_manager") # Debug print
+            self.manifest_manager.close() # ManifestManager's close method handles its own checks
+            # print("manifest_manager closed.") # Debug print
+
         if hasattr(self, 'processed_con') and self.processed_con:
-            self.processed_con.close()
+            try:
+                # print("Attempting to close processed_con") # Debug print
+                self.processed_con.close()
+                # print("processed_con closed.") # Debug print
+            except duckdb.Error as e:
+                print(f"Error closing processed_con: {e}")
+        # if hasattr(self, 'raw_lake_con') and self.raw_lake_con:
+        #     self.raw_lake_con.close()
+
         print("TransformationPipeline connections closed.")
 
 if __name__ == '__main__':
+    import json # Moved import here for clarity within __main__
     # Basic example for quick testing.
     # This requires setting up a dummy config, schema file, and dummy DBs.
 
@@ -128,12 +216,19 @@ if __name__ == '__main__':
     processed_db = example_data_dir / "processed.db"
 
     # Create dummy schema file
-    dummy_schemas = {
-        "typeA": {"keywords": ["report type a", "alpha version"]},
-        "typeB": {"keywords": ["beta report", "type b data"]}
+    # This schema should be identifiable by SchemaManager from the raw_content below
+    dummy_schemas_content = {
+        "schemaA_csv": {
+            "keywords": ["keyword_for_schemaA", "important_data"], # Keywords for identification
+            "file_type": "csv",
+            "encoding": "utf-8",
+            "delimiter": ",",
+            "columns": ["id", "name", "value"]
+        },
+        "typeB": {"keywords": ["beta report", "type b data"], "file_type": "json"} # Kept for variety
     }
     with open(example_schema_path, 'w', encoding='utf-8') as f:
-        json.dump(dummy_schemas, f)
+        json.dump(dummy_schemas_content, f)
 
     # Create dummy config
     example_config_content = f"""
@@ -167,13 +262,21 @@ paths:
                   ("hash789ghi", "/path/to/file3.json", "registered")) # This one should be ignored
     con_m.close()
 
-    # Raw Lake DB (just needs to exist for connection, content reading is placeholder)
+    # Raw Lake DB
     con_rl = duckdb.connect(str(raw_lake_db))
-    con_rl.execute("CREATE TABLE IF NOT EXISTS raw_files (file_hash VARCHAR PRIMARY KEY, raw_content BLOB)")
-    # In a real test, you'd insert raw_content corresponding to hashes for schema identification
+    con_rl.execute("CREATE TABLE IF NOT EXISTS raw_files (file_hash VARCHAR PRIMARY KEY, raw_content BLOB);")
+    # Insert content for 'hash123abc' that matches 'schemaA_csv'
+    # The content includes "keyword_for_schemaA" for identification by SchemaManager
+    sample_raw_data_for_hash123abc = b"keyword_for_schemaA\nimportant_data_header_ignored\n1,Alice,100\n2,Bob,200"
+    con_rl.execute("INSERT INTO raw_files (file_hash, raw_content) VALUES (?, ?)",
+                   ("hash123abc", sample_raw_data_for_hash123abc))
+    # Insert content for 'hash456def' - let's assume it won't be identified or parsed correctly for this test
+    sample_raw_data_for_hash456def = b"some other data,that,doesntmatch"
+    con_rl.execute("INSERT INTO raw_files (file_hash, raw_content) VALUES (?, ?)",
+                   ("hash456def", sample_raw_data_for_hash456def))
     con_rl.close()
 
-    # Processed DB (just needs to exist)
+    # Processed DB (just needs to exist for the pipeline to initialize)
     con_p = duckdb.connect(str(processed_db))
     con_p.close()
 
@@ -192,4 +295,3 @@ paths:
         if example_config_path.exists(): example_config_path.unlink(missing_ok=True)
         if example_schema_path.exists(): example_schema_path.unlink(missing_ok=True)
         # db files will be cleaned on next run or manually
-import json # ensure json is imported for the __main__ block if not already at top
