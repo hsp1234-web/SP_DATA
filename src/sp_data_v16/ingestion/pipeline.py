@@ -2,6 +2,7 @@ import pathlib
 from src.sp_data_v16.core.config import load_config
 from src.sp_data_v16.ingestion.manifest import ManifestManager
 from src.sp_data_v16.ingestion.scanner import FileScanner
+from .raw_loader import RawLakeLoader
 
 class IngestionPipeline:
     """
@@ -24,16 +25,24 @@ class IngestionPipeline:
             raise ValueError("Manifest DB path not found in configuration.")
         if "paths" not in self.config or "input_directory" not in self.config["paths"]:
             raise ValueError("Input directory path not found in configuration.")
+        if "raw_lake_db_path" not in self.config["database"]:
+            raise ValueError("Raw Lake DB path (raw_lake_db_path) not found in configuration.")
 
         self.manifest_db_path = self.config["database"]["manifest_db_path"]
+        self.raw_lake_db_path = self.config["database"]["raw_lake_db_path"]
         self.input_directory = self.config["paths"]["input_directory"]
 
         # Ensure the directory for the manifest DB exists
         db_parent_dir = pathlib.Path(self.manifest_db_path).parent
         db_parent_dir.mkdir(parents=True, exist_ok=True)
 
+        # Ensure the directory for the raw lake DB exists
+        raw_lake_db_parent_dir = pathlib.Path(self.raw_lake_db_path).parent
+        raw_lake_db_parent_dir.mkdir(parents=True, exist_ok=True)
+
         self.manifest_manager = ManifestManager(db_path=self.manifest_db_path)
-        print(f"IngestionPipeline initialized. Manifest DB: '{self.manifest_db_path}', Input Dir: '{self.input_directory}'")
+        self.raw_loader = RawLakeLoader(db_path=self.raw_lake_db_path)
+        print(f"IngestionPipeline initialized. Manifest DB: '{self.manifest_db_path}', Raw Lake DB: '{self.raw_lake_db_path}', Input Dir: '{self.input_directory}'")
 
     def run(self):
         """
@@ -57,8 +66,10 @@ class IngestionPipeline:
                     print(f"檔案已存在：{file_name} (Hash: {file_hash[:8]}...), 跳過處理。")
                     skipped_count += 1
                 else:
-                    print(f"新檔案發現：{file_name} (Hash: {file_hash[:8]}...), 已登錄。")
                     self.manifest_manager.register_file(file_hash, str(file_path))
+                    self.raw_loader.save_file(file_path, file_hash)
+                    self.manifest_manager.update_status(file_hash, 'loaded_to_raw_lake')
+                    print(f"新檔案發現：{file_name} (Hash: {file_hash[:8]}...), 已登錄 Manifest 並存入 Raw Lake。")
                     added_count += 1
         except FileNotFoundError as e:
             print(f"Error during scanning: {e}")
@@ -70,6 +81,8 @@ class IngestionPipeline:
             return
         finally:
             self.manifest_manager.close() # Ensure DB connection is closed
+            if hasattr(self, 'raw_loader') and self.raw_loader:
+                self.raw_loader.close()
 
         print("\n--- Ingestion Summary ---")
         print(f"流程結束。共掃描 {scanned_count} 個檔案，新增 {added_count} 個，跳過 {skipped_count} 個。")
@@ -83,7 +96,7 @@ if __name__ == '__main__':
     current_dir = pathlib.Path(__file__).parent
     example_config_path = current_dir / "temp_example_config.yaml"
     example_input_dir = current_dir / "example_pipeline_input"
-    example_data_dir = current_dir / "example_pipeline_data/v16" # for manifest.db
+    example_data_dir = current_dir / "example_pipeline_data/v16"
 
     # Clean up previous run's example files/dirs if they exist
     if example_input_dir.exists():
@@ -98,6 +111,10 @@ if __name__ == '__main__':
             (example_data_dir / "manifest.db").unlink()
         if (example_data_dir / "manifest.db.wal").exists(): # DuckDB WAL file
             (example_data_dir / "manifest.db.wal").unlink()
+        if (example_data_dir / "raw_lake.db").exists():
+            (example_data_dir / "raw_lake.db").unlink()
+        if (example_data_dir / "raw_lake.db.wal").exists():
+            (example_data_dir / "raw_lake.db.wal").unlink()
         # Remove data/v16 and then data if they become empty
         try:
             example_data_dir.rmdir()
@@ -115,7 +132,7 @@ if __name__ == '__main__':
     example_config_content = f"""
 database:
   manifest_db_path: "{example_data_dir.as_posix()}/manifest.db"
-  raw_lake_db_path: "data/v16/raw_lake.db"      # Placeholder
+  raw_lake_db_path: "{example_data_dir.as_posix()}/raw_lake.db"
   processed_db_path: "data/v16/processed_data.db" # Placeholder
 
 logging:
