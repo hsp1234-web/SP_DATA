@@ -110,6 +110,36 @@ def test_pipeline_run(temp_pipeline_env):
 
     print(f"Content of fileA.txt (hash: {file_a_hash[:8]}...) successfully verified in Raw Lake.")
 
+    # Verify file statuses in manifest after first run
+    con_manifest = None
+    try:
+        con_manifest = duckdb.connect(database=str(manifest_db_file), read_only=True)
+
+        file_a_path = input_dir / "fileA.txt"
+        file_b_path = input_dir / "fileB.log"
+        file_c_path = input_dir / "subfolder" / "fileC.dat"
+
+        expected_hashes_statuses = {
+            get_file_sha256(file_a_path): 'loaded_to_raw_lake',
+            get_file_sha256(file_b_path): 'loaded_to_raw_lake',
+            get_file_sha256(file_c_path): 'loaded_to_raw_lake'
+        }
+
+        actual_statuses = {}
+        records = con_manifest.execute("SELECT file_hash, status FROM file_manifest").fetchall()
+        for record in records:
+            actual_statuses[record[0]] = record[1]
+
+        for f_hash, expected_status in expected_hashes_statuses.items():
+            assert f_hash in actual_statuses, f"Hash {f_hash} not found in manifest."
+            assert actual_statuses[f_hash] == expected_status, \
+                f"For hash {f_hash}, expected status '{expected_status}', got '{actual_statuses[f_hash]}'."
+        print("File statuses successfully verified in manifest after first run.")
+
+    finally:
+        if con_manifest:
+            con_manifest.close()
+
     # Optional: Check specific statuses or file hashes if needed,
     # but count is a good primary indicator for this integration test.
 
