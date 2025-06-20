@@ -4,6 +4,8 @@ import pandas as pd
 from .schema_manager import SchemaManager
 from .raw_lake_reader import RawLakeReader
 from .parser import DataParser
+from .validator import DataValidator
+from .processed_loader import ProcessedDBLoader
 from src.sp_data_v16.ingestion.manifest import ManifestManager # Assuming ManifestManager handles its own connection
 from src.sp_data_v16.core.config import load_config
 
@@ -45,10 +47,17 @@ class TransformationPipeline:
         self.manifest_con = duckdb.connect(database=str(self.manifest_db_path), read_only=False)
         # self.raw_lake_con is effectively replaced by RawLakeReader instance
         # self.raw_lake_con = duckdb.connect(database=str(self.raw_lake_db_path), read_only=True) # Keep for now if other methods use it
-        self.processed_con = duckdb.connect(database=str(self.processed_db_path), read_only=False)
+        # self.processed_con = duckdb.connect(database=str(self.processed_db_path), read_only=False) # Replaced by ProcessedDBLoader
 
         self.schema_manager = SchemaManager(schema_path=str(self.schema_config_path))
         self.parser = DataParser()
+        self.validator = DataValidator() # Initialize DataValidator
+        try:
+            # Initialize ProcessedDBLoader, ensuring db_path is a string
+            self.processed_loader = ProcessedDBLoader(db_path=str(self.processed_db_path))
+        except Exception as e:
+            print(f"Error initializing ProcessedDBLoader: {e}")
+            raise
 
         try:
             self.raw_lake_reader = RawLakeReader(db_path=str(self.raw_lake_db_path))
@@ -136,53 +145,70 @@ class TransformationPipeline:
 
                 # 3. Parse Data
                 dataframe = self.parser.parse(raw_content, schema_definition)
-                if dataframe is not None:
-                    print(f"Successfully parsed {file_path} using schema {schema_name}.")
-                    print("DataFrame head:")
-                    print(dataframe.head())
-                    # Placeholder: Further processing/loading to processed_con would happen here
-                    # For now, just update status to 'parsed'
-                    self.manifest_manager.update_status(file_hash, 'parsed')
-                    print(f"Updated manifest status for {file_hash} to 'parsed'.")
-                else:
-                    print(f"Error: Failed to parse {file_path} (Hash: {file_hash[:8]}). Skipping.")
+                if dataframe is None:
+                    print(f"Error: Failed to parse {file_path} (Hash: {file_hash[:8]}) using parser. Skipping.")
                     self.manifest_manager.update_status(file_hash, 'parse_error_parser_failed')
-                    # No continue here, already at end of loop for this item
+                    continue # Skip to the next file
+
+                print(f"Successfully parsed {file_path} using schema '{schema_name}'.")
+                # print("DataFrame head before validation:")
+                # print(dataframe.head())
+
+                # 4. Validate Data
+                validated_df = self.validator.validate(dataframe, schema_definition)
+
+                # Check if validation returned None or an empty DataFrame if the original was not empty
+                # This indicates critical validation issues.
+                if validated_df is None or (dataframe.shape[0] > 0 and validated_df.shape[0] == 0):
+                    print(f"Error: Data validation failed critically for {file_path} (Hash: {file_hash[:8]}). Skipping.")
+                    self.manifest_manager.update_status(file_hash, 'validation_error')
+                    continue # Skip to the next file
+
+                print(f"Data validation completed for {file_path}. Warnings may have been issued by the validator.")
+                # print("Validated DataFrame head:")
+                # print(validated_df.head())
+
+                # 5. Load Data
+                # Use 'table_name' from schema if defined, otherwise fallback to schema_name
+                table_name = schema_definition.get('table_name', schema_name)
+
+                try:
+                    self.processed_loader.load_dataframe(validated_df, table_name)
+                    self.manifest_manager.update_status(file_hash, 'processed')
+                    print(f"Successfully loaded data from {file_path} into table '{table_name}'. Updated manifest status to 'processed'.")
+                except duckdb.Error as e: # Catch specific DuckDB errors
+                    print(f"Error: Failed to load data from {file_path} (Hash: {file_hash[:8]}) into table '{table_name}'. Database error: {e}")
+                    self.manifest_manager.update_status(file_hash, 'load_error')
+                except Exception as e: # Catch other errors from load_dataframe (e.g., if connection was lost)
+                    print(f"Error: An unexpected error occurred while loading data from {file_path} (Hash: {file_hash[:8]}) into table '{table_name}': {e}")
+                    self.manifest_manager.update_status(file_hash, 'load_error')
 
         finally:
             self.close()
 
     def close(self):
-        # Ensure connections are closed in a specific order or handle dependencies if any
-        # For DuckDB, independent close calls are usually fine.
-
+        # Close connections in a controlled manner
         if hasattr(self, 'manifest_con') and self.manifest_con:
             try:
-                # print("Attempting to close manifest_con") # Debug print
                 self.manifest_con.close()
-                # print("manifest_con closed.") # Debug print
             except duckdb.Error as e:
                 print(f"Error closing manifest_con: {e}")
 
         if hasattr(self, 'raw_lake_reader') and self.raw_lake_reader:
-            # print("Attempting to close raw_lake_reader") # Debug print
-            self.raw_lake_reader.close() # RawLakeReader's close method handles its own checks
-            # print("raw_lake_reader closed.") # Debug print
+            self.raw_lake_reader.close() # Manages its own connection closing
 
         if hasattr(self, 'manifest_manager') and self.manifest_manager:
-            # print("Attempting to close manifest_manager") # Debug print
-            self.manifest_manager.close() # ManifestManager's close method handles its own checks
-            # print("manifest_manager closed.") # Debug print
+            self.manifest_manager.close() # Manages its own connection closing
 
-        if hasattr(self, 'processed_con') and self.processed_con:
-            try:
-                # print("Attempting to close processed_con") # Debug print
-                self.processed_con.close()
-                # print("processed_con closed.") # Debug print
-            except duckdb.Error as e:
-                print(f"Error closing processed_con: {e}")
-        # if hasattr(self, 'raw_lake_con') and self.raw_lake_con:
-        #     self.raw_lake_con.close()
+        if hasattr(self, 'processed_loader') and self.processed_loader:
+            self.processed_loader.close() # Manages its own connection closing
+
+        # The direct self.processed_con is no longer managed here.
+        # if hasattr(self, 'processed_con') and self.processed_con:
+        #     try:
+        #         self.processed_con.close()
+        #     except duckdb.Error as e:
+        #         print(f"Error closing processed_con: {e}")
 
         print("TransformationPipeline connections closed.")
 
@@ -219,13 +245,30 @@ if __name__ == '__main__':
     # This schema should be identifiable by SchemaManager from the raw_content below
     dummy_schemas_content = {
         "schemaA_csv": {
-            "keywords": ["keyword_for_schemaA", "important_data"], # Keywords for identification
+            "table_name": "target_table_A", # Explicit table name for processed data
+            "keywords": ["keyword_for_schemaA", "important_data"],
             "file_type": "csv",
             "encoding": "utf-8",
             "delimiter": ",",
-            "columns": ["id", "name", "value"]
+            "csv_skip_rows": 2, # Number of rows to skip at the beginning of the CSV
+            "columns": { # Column definitions with types for validation
+                "id": {"dtype": "integer", "nullable": False},
+                "name": {"dtype": "string", "nullable": False},
+                "value": {"dtype": "float", "nullable": True},
+                "event_date": {"dtype": "datetime", "nullable": True}
+            }
         },
-        "typeB": {"keywords": ["beta report", "type b data"], "file_type": "json"} # Kept for variety
+        "typeB_json": { # Renamed for clarity
+            "table_name": "target_table_B",
+            "keywords": ["beta report", "type b data"],
+            "file_type": "json",
+            # Assuming JSON is a list of objects, or a single object per file.
+            # Parser needs to handle this structure.
+            "columns": {
+                 "report_id": {"dtype": "string", "nullable": False},
+                 "metric": {"dtype": "float", "nullable": True}
+            }
+        }
     }
     with open(example_schema_path, 'w', encoding='utf-8') as f:
         json.dump(dummy_schemas_content, f)
@@ -266,17 +309,28 @@ paths:
     con_rl = duckdb.connect(str(raw_lake_db))
     con_rl.execute("CREATE TABLE IF NOT EXISTS raw_files (file_hash VARCHAR PRIMARY KEY, raw_content BLOB);")
     # Insert content for 'hash123abc' that matches 'schemaA_csv'
-    # The content includes "keyword_for_schemaA" for identification by SchemaManager
-    sample_raw_data_for_hash123abc = b"keyword_for_schemaA\nimportant_data_header_ignored\n1,Alice,100\n2,Bob,200"
+    # This data includes lines to be skipped, and values that test validation (good, bad float, bad date)
+    sample_raw_data_for_hash123abc = (
+        b"keyword_for_schemaA\n"
+        b"important_data_header_ignored\n"
+        b"1,Alice,100.5,2023-01-15\n"
+        b"2,Bob,invalid_float,2023-02-20\n" # invalid_float should become NaN
+        b"3,Charlie,300.0,not-a-date\n"     # not-a-date should become NaT
+        b"4,Eve,,2023-04-10\n"              # Empty value for nullable float, valid date
+        b"5,Mallory,500.7,\n"               # Valid float, empty for nullable date
+        b"invalid_id,Grace,600.0,2023-05-01" # invalid_id for integer column
+    )
     con_rl.execute("INSERT INTO raw_files (file_hash, raw_content) VALUES (?, ?)",
                    ("hash123abc", sample_raw_data_for_hash123abc))
-    # Insert content for 'hash456def' - let's assume it won't be identified or parsed correctly for this test
-    sample_raw_data_for_hash456def = b"some other data,that,doesntmatch"
+
+    # Insert content for 'hash456def' - designed to fail schema identification or parsing
+    sample_raw_data_for_hash456def = b"completely_different_data,unrelated_to_any_schema"
     con_rl.execute("INSERT INTO raw_files (file_hash, raw_content) VALUES (?, ?)",
                    ("hash456def", sample_raw_data_for_hash456def))
     con_rl.close()
 
-    # Processed DB (just needs to exist for the pipeline to initialize)
+    # Processed DB (ProcessedDBLoader will create it if it doesn't exist via its __init__,
+    # including parent directories. No need to explicitly create con_p here for this purpose)
     con_p = duckdb.connect(str(processed_db))
     con_p.close()
 

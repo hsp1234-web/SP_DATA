@@ -26,10 +26,20 @@ class DataParser:
 
         encoding = schema.get('encoding', 'utf-8')
         delimiter = schema.get('delimiter', ',')
-        columns = schema.get('columns')
+        columns_definition = schema.get('columns')
+        column_names = None
 
-        if not columns or not isinstance(columns, list) or len(columns) == 0:
-            print("Error: Schema must define a non-empty list of 'columns'.")
+        if isinstance(columns_definition, dict):
+            column_names = list(columns_definition.keys())
+        elif isinstance(columns_definition, list):
+            # Could be a list of strings (names) or list of dicts (more complex, not currently supported by this parser directly for names)
+            # For now, assume if it's a list, it's a list of names, or the validator will handle richer structures.
+            # The original check was just for list of strings.
+            column_names = columns_definition
+
+
+        if not column_names or not isinstance(column_names, list) or len(column_names) == 0:
+            print("Error: Schema must define a non-empty list of 'columns' (or a dictionary of column definitions).")
             return None
 
         try:
@@ -43,11 +53,21 @@ class DataParser:
             df = pd.read_csv(
                 content_io,
                 delimiter=delimiter,
-                names=columns,
+                names=column_names, # Use the extracted/validated list of names
                 header=None,  # We are providing column names via 'names'
                 skipinitialspace=True, # Handles spaces after delimiter
                 index_col=False # Explicitly prevent first column from becoming index
             )
+            # Handle potential skipping of rows (e.g., for keywords or headers in the data file itself)
+            # This should ideally be driven by the schema.
+            rows_to_skip = schema.get('csv_skip_rows', 0)
+            if rows_to_skip > 0 and not df.empty and len(df) > rows_to_skip :
+                df = df.iloc[rows_to_skip:].reset_index(drop=True)
+            elif rows_to_skip > 0 : # df might be empty or have fewer rows than skip_rows
+                # If we skip more rows than exist, return an empty DataFrame with correct columns
+                df = pd.DataFrame(columns=column_names)
+
+
             return df
 
         except UnicodeDecodeError:
