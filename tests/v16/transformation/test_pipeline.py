@@ -285,3 +285,281 @@ def test_pipeline_run_updates_statuses(transformation_pipeline_env):
     finally:
         if p_conn_check:
             p_conn_check.close()
+
+# --- Unit Tests for TransformationPipeline ---
+from unittest.mock import MagicMock, patch # Added patch here
+
+@pytest.mark.parametrize(
+    "missing_key_info", # Changed to a more descriptive name
+    [
+        # Test case 1: Missing 'processed_db_path'
+        ({"config_override": {"database": {"processed_db_path": None}}, "expected_missing_key_in_error": "processed_db_path"}),
+        # Test case 2: Missing 'schema_config_path'
+        ({"config_override": {"paths": {"schema_config_path": None}}, "expected_missing_key_in_error": "schema_config_path"}),
+        # Test case 3: Missing 'manifest_db_path'
+        ({"config_override": {"database": {"manifest_db_path": None}}, "expected_missing_key_in_error": "manifest_db_path"}),
+        # Test case 4: Missing 'raw_lake_db_path'
+        ({"config_override": {"database": {"raw_lake_db_path": None}}, "expected_missing_key_in_error": "raw_lake_db_path"}),
+        # Test case 5: Top-level 'database' key missing entirely
+        ({"config_override": "remove_database_key", "expected_missing_key_in_error": "manifest_db_path"}), # Will also miss raw_lake and processed
+        # Test case 6: Top-level 'paths' key missing entirely
+        ({"config_override": "remove_paths_key", "expected_missing_key_in_error": "schema_config_path"}),
+    ]
+)
+def test_pipeline_init_raises_value_error_on_missing_config(
+    monkeypatch, tmp_path, missing_key_info
+):
+    """測試 TransformationPipeline 初始化時，若設定檔缺少關鍵路徑，會引發 ValueError。"""
+    config_override = missing_key_info["config_override"]
+    expected_missing_key = missing_key_info["expected_missing_key_in_error"]
+
+    base_config = {
+        "database": {
+            "manifest_db_path": str(tmp_path / "manifest.db"),
+            "raw_lake_db_path": str(tmp_path / "raw_lake.db"),
+            "processed_db_path": str(tmp_path / "processed.db")
+        },
+        "paths": {
+            "schema_config_path": str(tmp_path / "schemas.json")
+        }
+    }
+
+    # Apply the override
+    if isinstance(config_override, dict):
+        if "database" in config_override:
+            if base_config["database"] is None: base_config["database"] = {} # Ensure nested dict exists
+            base_config["database"].update(config_override["database"])
+        if "paths" in config_override:
+            if base_config["paths"] is None: base_config["paths"] = {} # Ensure nested dict exists
+            base_config["paths"].update(config_override["paths"])
+    elif config_override == "remove_database_key":
+        del base_config["database"]
+    elif config_override == "remove_paths_key":
+        del base_config["paths"]
+
+
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.load_config", lambda x: base_config)
+
+    # Mock dependencies to isolate the config check
+    monkeypatch.setattr(pathlib.Path, "mkdir", MagicMock())
+    # Mock duckdb.connect at the source where it's imported in pipeline.py
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.duckdb.connect", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.SchemaManager", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.DataParser", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.DataValidator", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.ProcessedDBLoader", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.RawLakeReader", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.ManifestManager", MagicMock())
+
+    with pytest.raises(ValueError) as excinfo:
+        TransformationPipeline(config_path="dummy_config.yaml")
+
+    # The error message lists all missing keys. We check if our expected one is present.
+    assert f"Missing required paths in configuration:" in str(excinfo.value)
+    assert expected_missing_key in str(excinfo.value)
+
+def test_pipeline_init_creates_schema_parent_directory(monkeypatch, tmp_path):
+    """測試 TransformationPipeline 初始化時，會自動建立不存在的 schema 路徑的父目錄。"""
+    non_existent_schema_dir = tmp_path / "non_existent_schemas_dir"
+    schema_file_in_non_existent_dir = non_existent_schema_dir / "schemas.json"
+
+    # Pre-condition: Ensure the directory does not exist
+    assert not non_existent_schema_dir.exists()
+
+    mock_config_dict = {
+        "database": {
+            "manifest_db_path": str(tmp_path / "manifest.db"),
+            "raw_lake_db_path": str(tmp_path / "raw_lake.db"),
+            "processed_db_path": str(tmp_path / "processed.db")
+        },
+        "paths": {
+            "schema_config_path": str(schema_file_in_non_existent_dir)
+        }
+    }
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.load_config", lambda x: mock_config_dict)
+
+    # Mock other mkdir calls for DB paths to avoid side effects if they also don't exist
+    # but we are specifically not mocking the one for schema_config_path.parent
+    # For simplicity in this specific test, we can let all mkdir run, or mock specific ones.
+    # Let's allow mkdir to run for this test to verify its behavior.
+    # However, we must mock duckdb.connect and other initializers that might fail if
+    # their respective DB files/paths are not fully set up by this minimal config.
+
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.duckdb.connect", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.SchemaManager", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.DataParser", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.DataValidator", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.ProcessedDBLoader", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.RawLakeReader", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.ManifestManager", MagicMock())
+
+    # Initialize the pipeline
+    TransformationPipeline(config_path="dummy_config.yaml")
+
+    # Post-condition: Assert the specific parent directory for schema_config_path was created
+    assert non_existent_schema_dir.exists()
+    assert non_existent_schema_dir.is_dir()
+
+@pytest.mark.parametrize(
+    "dependency_to_fail, error_to_raise, expected_exception_type, expected_error_message_part",
+    [
+        ("RawLakeReader", ConnectionError("Simulated RawLakeReader Connection Error"), ConnectionError, "Simulated RawLakeReader Connection Error"),
+        ("ManifestManager", ConnectionError("Simulated ManifestManager Connection Error"), ConnectionError, "Simulated ManifestManager Connection Error"),
+        ("ProcessedDBLoader", Exception("Simulated ProcessedDBLoader Init Error"), Exception, "Simulated ProcessedDBLoader Init Error"),
+        ("SchemaManager", FileNotFoundError("Simulated SchemaManager: Schema config file not found"), FileNotFoundError, "Simulated SchemaManager: Schema config file not found"),
+        # This case tests the direct duckdb.connect for self.manifest_con
+        ("duckdb.connect_manifest_direct", duckdb.Error("Simulated direct duckdb.connect error for manifest"), duckdb.Error, "Simulated direct duckdb.connect error for manifest"),
+        # This case tests if ProcessedDBLoader.__init__ itself raises an error that TransformationPipeline catches and re-raises
+        ("ProcessedDBLoader_internal_fail", Exception("Simulated ProcessedDBLoader internal error, caught by pipeline"), Exception, "Simulated ProcessedDBLoader internal error, caught by pipeline"),
+    ]
+)
+def test_pipeline_init_handles_dependency_errors(
+    monkeypatch, tmp_path, dependency_to_fail, error_to_raise, expected_exception_type, expected_error_message_part
+):
+    """測試 TransformationPipeline 初始化時，若依賴項初始化失敗，會拋出相應的錯誤。"""
+    mock_config_dict = {
+        "database": {
+            "manifest_db_path": str(tmp_path / "manifest.db"),
+            "raw_lake_db_path": str(tmp_path / "raw_lake.db"),
+            "processed_db_path": str(tmp_path / "processed.db")
+        },
+        "paths": {
+            "schema_config_path": str(tmp_path / "schemas.json")
+        }
+    }
+    if dependency_to_fail != "SchemaManager":
+        (tmp_path / "schemas.json").touch() # Ensure schema file exists
+
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.load_config", lambda x: mock_config_dict)
+    monkeypatch.setattr(pathlib.Path, "mkdir", MagicMock())
+
+    # Default successful mocks
+    mock_duckdb_connect_default = MagicMock(return_value=MagicMock(name="default_db_conn"))
+    mock_schema_manager_init_default = MagicMock(return_value=MagicMock(name="schema_manager_instance"))
+    mock_data_parser_init_default = MagicMock(return_value=MagicMock(name="data_parser_instance"))
+    mock_data_validator_init_default = MagicMock(return_value=MagicMock(name="data_validator_instance"))
+    mock_processed_db_loader_init_default = MagicMock(return_value=MagicMock(name="processed_loader_instance"))
+    mock_raw_lake_reader_init_default = MagicMock(return_value=MagicMock(name="raw_lake_reader_instance"))
+    mock_manifest_manager_init_default = MagicMock(return_value=MagicMock(name="manifest_manager_instance"))
+
+    # Assign defaults first, then override the one that should fail
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.duckdb.connect", mock_duckdb_connect_default)
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.SchemaManager", mock_schema_manager_init_default)
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.DataParser", mock_data_parser_init_default)
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.DataValidator", mock_data_validator_init_default)
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.ProcessedDBLoader", mock_processed_db_loader_init_default)
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.RawLakeReader", mock_raw_lake_reader_init_default)
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.ManifestManager", mock_manifest_manager_init_default)
+
+    # Apply failure mock
+    if dependency_to_fail == "RawLakeReader":
+        mock_raw_lake_reader_init_default.side_effect = error_to_raise
+    elif dependency_to_fail == "ManifestManager":
+        mock_manifest_manager_init_default.side_effect = error_to_raise
+    elif dependency_to_fail == "ProcessedDBLoader": # This targets the direct __init__ of ProcessedDBLoader
+        mock_processed_db_loader_init_default.side_effect = error_to_raise
+    elif dependency_to_fail == "SchemaManager":
+        mock_schema_manager_init_default.side_effect = error_to_raise
+    elif dependency_to_fail == "duckdb.connect_manifest_direct":
+        # This makes the duckdb.connect call for self.manifest_con fail
+        # Need to ensure other duckdb.connect calls (e.g. inside other components if not mocked) don't also fail
+        # For this test, other components' __init__ are mocked, so their internal connects won't happen.
+        mock_duckdb_connect_default.side_effect = error_to_raise
+    elif dependency_to_fail == "ProcessedDBLoader_internal_fail":
+        # This is for the case where ProcessedDBLoader.__init__ itself raises an error,
+        # and TransformationPipeline catches it and re-raises.
+        mock_processed_db_loader_init_default.side_effect = error_to_raise
+
+
+    with pytest.raises(expected_exception_type) as excinfo:
+        TransformationPipeline(config_path="dummy_config.yaml")
+
+    # The raised exception e, should be what we simulated.
+    # The print statements in TransformationPipeline.__init__ are for logging/debugging,
+    # the actual exception raised should be the one from the dependency.
+    assert expected_error_message_part in str(excinfo.value)
+
+def test_find_pending_files_handles_no_results(monkeypatch, tmp_path):
+    """測試 find_pending_files 在資料庫查詢無結果時返回空列表。"""
+    mock_config_dict = {
+        "database": {
+            "manifest_db_path": str(tmp_path / "manifest.db"),
+            "raw_lake_db_path": str(tmp_path / "raw_lake.db"),
+            "processed_db_path": str(tmp_path / "processed.db")
+        },
+        "paths": {"schema_config_path": str(tmp_path / "schemas.json")}
+    }
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.load_config", lambda x: mock_config_dict)
+    monkeypatch.setattr(pathlib.Path, "mkdir", MagicMock())
+
+    # Mock duckdb.connect to return a connection object with a mock execute method
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [] # No results
+    mock_cursor.description = [('file_hash',), ('file_path',), ('status',), ('registration_timestamp',)] # Mock description
+
+    mock_connection = MagicMock()
+    mock_connection.execute.return_value = mock_cursor
+
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.duckdb.connect", MagicMock(return_value=mock_connection))
+
+    # Mock other dependencies of TransformationPipeline.__init__
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.SchemaManager", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.DataParser", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.DataValidator", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.ProcessedDBLoader", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.RawLakeReader", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.ManifestManager", MagicMock())
+
+
+    pipeline = TransformationPipeline(config_path="dummy_config.yaml")
+    # Overwrite the specific manifest_con instance after it's created in __init__
+    # This is because __init__ sets self.manifest_con = duckdb.connect(...)
+    # and we want to control the execute method on *that specific connection instance*
+    # for find_pending_files.
+    pipeline.manifest_con = mock_connection # Replace with our controlled mock
+
+    result = pipeline.find_pending_files()
+    assert result == []
+    mock_connection.execute.assert_called_once_with(
+        "SELECT file_hash, file_path, status, registration_timestamp FROM file_manifest WHERE status = 'loaded_to_raw_lake'"
+    )
+    mock_cursor.fetchall.assert_called_once()
+
+def test_find_pending_files_handles_db_error(monkeypatch, tmp_path, capsys):
+    """測試 find_pending_files 在資料庫查詢時發生 duckdb.Error，能返回空列表並記錄錯誤。"""
+    mock_config_dict = {
+        "database": {
+            "manifest_db_path": str(tmp_path / "manifest.db"),
+            "raw_lake_db_path": str(tmp_path / "raw_lake.db"),
+            "processed_db_path": str(tmp_path / "processed.db")
+        },
+        "paths": {"schema_config_path": str(tmp_path / "schemas.json")}
+    }
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.load_config", lambda x: mock_config_dict)
+    monkeypatch.setattr(pathlib.Path, "mkdir", MagicMock())
+
+    mock_connection = MagicMock()
+    mock_connection.execute.side_effect = duckdb.Error("Simulated DB query error")
+    # duckdb.connect自體被mock以返回這個受控制的mock_connection
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.duckdb.connect", MagicMock(return_value=mock_connection))
+
+    # Mock other dependencies of TransformationPipeline.__init__
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.SchemaManager", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.DataParser", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.DataValidator", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.ProcessedDBLoader", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.RawLakeReader", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.ManifestManager", MagicMock())
+
+    pipeline = TransformationPipeline(config_path="dummy_config.yaml")
+    # 確保 pipeline.manifest_con 是我們的 mock_connection
+    pipeline.manifest_con = mock_connection
+
+    result = pipeline.find_pending_files()
+    assert result == []
+
+    captured = capsys.readouterr()
+    assert "Database error in find_pending_files: Simulated DB query error" in captured.out
+    mock_connection.execute.assert_called_once_with(
+        "SELECT file_hash, file_path, status, registration_timestamp FROM file_manifest WHERE status = 'loaded_to_raw_lake'"
+    )
