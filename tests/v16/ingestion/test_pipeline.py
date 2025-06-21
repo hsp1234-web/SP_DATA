@@ -185,3 +185,169 @@ def get_file_sha256(file_path: pathlib.Path) -> str:
         for byte_block in iter(lambda: f.read(4096), b""):
             sha256_hash.update(byte_block)
     return sha256_hash.hexdigest()
+
+# --- Unit Tests for IngestionPipeline ---
+from unittest.mock import MagicMock, call # 引入 MagicMock 和 call
+
+def test_pipeline_initialization_success(monkeypatch, tmp_path):
+    """測試 IngestionPipeline 使用有效設定成功初始化。"""
+    mock_config_dict = { # 更名以避免與 pytest 的 config fixture 衝突
+        "database": {
+            "manifest_db_path": str(tmp_path / "manifest.db"),
+            "raw_lake_db_path": str(tmp_path / "raw_lake.db")
+        },
+        "paths": {
+            "input_directory": str(tmp_path / "input")
+        }
+    }
+
+    # Mock load_config
+    monkeypatch.setattr("src.sp_data_v16.ingestion.pipeline.load_config", lambda x: mock_config_dict)
+
+    # Mock pathlib.Path.mkdir
+    mock_mkdir_method = MagicMock() # 更名以避免與 pytest 的 mkdir fixture 衝突
+    monkeypatch.setattr(pathlib.Path, "mkdir", mock_mkdir_method)
+
+    # Mock ManifestManager
+    mock_mm_instance = MagicMock()
+    mock_mm_init = MagicMock(return_value=mock_mm_instance)
+    monkeypatch.setattr("src.sp_data_v16.ingestion.pipeline.ManifestManager", mock_mm_init)
+
+    # Mock RawLakeLoader
+    mock_rll_instance = MagicMock()
+    mock_rll_init = MagicMock(return_value=mock_rll_instance)
+    monkeypatch.setattr("src.sp_data_v16.ingestion.pipeline.RawLakeLoader", mock_rll_init)
+
+    pipeline = IngestionPipeline(config_path="dummy_config.yaml")
+
+    assert pipeline.manifest_db_path == mock_config_dict["database"]["manifest_db_path"]
+    assert pipeline.raw_lake_db_path == mock_config_dict["database"]["raw_lake_db_path"]
+    assert pipeline.input_directory == mock_config_dict["paths"]["input_directory"]
+
+    # 驗證 mkdir 被呼叫以創建 manifest DB 和 raw lake DB 的父目錄
+    # pathlib.Path("...").parent.mkdir(...)
+    # The mock_mkdir_method is directly patching `pathlib.Path.mkdir`.
+    # The calls would be on the Path objects representing the parent directories.
+    # We expect it to be called for manifest_db_path.parent and raw_lake_db_path.parent
+    assert mock_mkdir_method.call_count == 2
+    # 檢查呼叫的參數 (parents=True, exist_ok=True)
+    # 由於 mock_mkdir_method 會被不同的 Path 實例（即 parent 目錄）呼叫，
+    # 我們可以檢查 calls 列表中的參數
+    calls = [call(parents=True, exist_ok=True), call(parents=True, exist_ok=True)]
+    mock_mkdir_method.assert_has_calls(calls, any_order=False) # 順序可能重要，取決於程式碼
+
+    mock_mm_init.assert_called_once_with(db_path=mock_config_dict["database"]["manifest_db_path"])
+    mock_rll_init.assert_called_once_with(db_path=mock_config_dict["database"]["raw_lake_db_path"])
+
+@pytest.mark.parametrize(
+    "invalid_config_dict, expected_error_msg_part",
+    [
+        (None, "Configuration could not be loaded."),
+        ({}, "Configuration could not be loaded."), # An empty dict is False in boolean context
+        ({"database": {}}, "Manifest DB path not found in configuration."),
+        ({"database": {"manifest_db_path": "dummy_manifest.db"}}, "Input directory path not found in configuration."),
+        ({"database": {"manifest_db_path": "dummy_manifest.db"}, "paths": {}}, "Input directory path not found in configuration."),
+        ({ # Missing raw_lake_db_path
+            "database": {"manifest_db_path": "dummy_manifest.db"},
+            "paths": {"input_directory": "dummy_input"}
+         }, "Raw Lake DB path (raw_lake_db_path) not found in configuration."),
+    ]
+)
+def test_pipeline_initialization_raises_value_error_on_missing_keys(
+    monkeypatch, tmp_path, invalid_config_dict, expected_error_msg_part
+):
+    """測試 IngestionPipeline 初始化時，若設定檔缺少關鍵鍵，會引發 ValueError。"""
+
+    # Mock load_config to return the parameterized invalid config
+    monkeypatch.setattr("src.sp_data_v16.ingestion.pipeline.load_config", lambda x: invalid_config_dict)
+
+    # Mock pathlib.Path.mkdir as it might be called if some paths are present
+    mock_mkdir_method = MagicMock()
+    monkeypatch.setattr(pathlib.Path, "mkdir", mock_mkdir_method)
+
+    # Mock ManifestManager and RawLakeLoader __init__ as they might be called if initialization proceeds partially
+    mock_mm_init = MagicMock()
+    monkeypatch.setattr("src.sp_data_v16.ingestion.pipeline.ManifestManager", mock_mm_init)
+    mock_rll_init = MagicMock()
+    monkeypatch.setattr("src.sp_data_v16.ingestion.pipeline.RawLakeLoader", mock_rll_init)
+
+    with pytest.raises(ValueError) as excinfo:
+        IngestionPipeline(config_path="dummy_config.yaml")
+
+    assert expected_error_msg_part in str(excinfo.value)
+
+def test_run_handles_file_not_found_during_scan(monkeypatch, tmp_path, capsys):
+    """測試在掃描過程中 FileScanner.scan_directory 拋出 FileNotFoundError 時，pipeline.run 能正確處理。"""
+    mock_config_dict = {
+        "database": {
+            "manifest_db_path": str(tmp_path / "manifest.db"),
+            "raw_lake_db_path": str(tmp_path / "raw_lake.db")
+        },
+        "paths": {"input_directory": str(tmp_path / "input")}
+    }
+    monkeypatch.setattr("src.sp_data_v16.ingestion.pipeline.load_config", lambda x: mock_config_dict)
+    monkeypatch.setattr(pathlib.Path, "mkdir", MagicMock())
+
+    # Mock ManifestManager and RawLakeLoader
+    mock_mm_instance = MagicMock()
+    mock_mm_init = MagicMock(return_value=mock_mm_instance)
+    monkeypatch.setattr("src.sp_data_v16.ingestion.pipeline.ManifestManager", mock_mm_init)
+
+    mock_rll_instance = MagicMock()
+    mock_rll_init = MagicMock(return_value=mock_rll_instance)
+    monkeypatch.setattr("src.sp_data_v16.ingestion.pipeline.RawLakeLoader", mock_rll_init)
+
+    # Mock FileScanner.scan_directory to raise FileNotFoundError
+    def mock_scan_directory_raises_fnf(directory_path):
+        raise FileNotFoundError("Simulated FileScanner.scan_directory error")
+        yield # This makes it a generator, which scan_directory is
+
+    monkeypatch.setattr("src.sp_data_v16.ingestion.scanner.FileScanner.scan_directory", mock_scan_directory_raises_fnf)
+
+    pipeline = IngestionPipeline(config_path="dummy_config.yaml")
+    pipeline.run()
+
+    captured = capsys.readouterr()
+    assert "Error during scanning: Simulated FileScanner.scan_directory error" in captured.out
+    assert "Ingestion process aborted." in captured.out
+    # 確保 ManifestManager 和 RawLakeLoader 的 close 被呼叫
+    mock_mm_instance.close.assert_called_once()
+    mock_rll_instance.close.assert_called_once()
+
+def test_run_handles_unexpected_exception_during_scan(monkeypatch, tmp_path, capsys):
+    """測試在掃描過程中 FileScanner.scan_directory 拋出通用 Exception 時，pipeline.run 能正確處理。"""
+    mock_config_dict = {
+        "database": {
+            "manifest_db_path": str(tmp_path / "manifest.db"),
+            "raw_lake_db_path": str(tmp_path / "raw_lake.db")
+        },
+        "paths": {"input_directory": str(tmp_path / "input")}
+    }
+    monkeypatch.setattr("src.sp_data_v16.ingestion.pipeline.load_config", lambda x: mock_config_dict)
+    monkeypatch.setattr(pathlib.Path, "mkdir", MagicMock())
+
+    # Mock ManifestManager and RawLakeLoader
+    mock_mm_instance = MagicMock()
+    mock_mm_init = MagicMock(return_value=mock_mm_instance)
+    monkeypatch.setattr("src.sp_data_v16.ingestion.pipeline.ManifestManager", mock_mm_init)
+
+    mock_rll_instance = MagicMock()
+    mock_rll_init = MagicMock(return_value=mock_rll_instance)
+    monkeypatch.setattr("src.sp_data_v16.ingestion.pipeline.RawLakeLoader", mock_rll_init)
+
+    # Mock FileScanner.scan_directory to raise a generic Exception
+    def mock_scan_directory_raises_exception(directory_path):
+        raise Exception("Simulated generic error in FileScanner.scan_directory")
+        yield # This makes it a generator
+
+    monkeypatch.setattr("src.sp_data_v16.ingestion.scanner.FileScanner.scan_directory", mock_scan_directory_raises_exception)
+
+    pipeline = IngestionPipeline(config_path="dummy_config.yaml")
+    pipeline.run()
+
+    captured = capsys.readouterr()
+    assert "An unexpected error occurred during the ingestion run: Simulated generic error in FileScanner.scan_directory" in captured.out
+    assert "Ingestion process aborted." in captured.out
+    # 確保 ManifestManager 和 RawLakeLoader 的 close 被呼叫
+    mock_mm_instance.close.assert_called_once()
+    mock_rll_instance.close.assert_called_once()
