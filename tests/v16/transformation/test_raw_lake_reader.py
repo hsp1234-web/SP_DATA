@@ -49,6 +49,84 @@ def test_get_raw_content_exists(setup_dummy_raw_lake_db):
         if reader:
             reader.close()
 
+def test_close_handles_duckdb_error(setup_dummy_raw_lake_db, monkeypatch):
+    """
+    測試在關閉資料庫連線時發生 duckdb.Error，程式是否能正確處理而不崩潰。
+    """
+    db_path = setup_dummy_raw_lake_db # Fixture for path, though connect is mocked
+    reader = None
+
+    class MockConnectionFailsClose:
+        def close(self):
+            raise duckdb.Error("Simulated DB Error During Close")
+        # Add other methods that might be called by duckdb.connect or RawLakeReader init/usage if any
+        def execute(self, *args, **kwargs): pass
+        def cursor(self, *args, **kwargs): return self # if cursor is used
+
+    def mock_duckdb_connect_for_close_error(database, read_only):
+        # This mock connect returns a connection that will fail on close
+        return MockConnectionFailsClose()
+
+    monkeypatch.setattr(duckdb, "connect", mock_duckdb_connect_for_close_error)
+
+    try:
+        reader = RawLakeReader(db_path=str(db_path)) # duckdb.connect is mocked here
+        reader.close()  # This should call MockConnectionFailsClose.close() and trigger the error
+                        # The test asserts that RawLakeReader's close method handles this error gracefully.
+    except Exception as e:
+        # If any other exception escapes, the test fails.
+        pytest.fail(f"RawLakeReader.close() raised an unhandled exception: {e}")
+    finally:
+        if reader:
+            # reader.close() was already called.
+            # If an error occurred in reader.close() and was not handled, it would have propagated.
+            # If it was handled, then self.con might be in an indeterminate state from RawLakeReader's perspective.
+            pass
+        monkeypatch.undo() # Important to restore original duckdb.connect
+
+def test_get_raw_content_handles_unexpected_db_exception(setup_dummy_raw_lake_db, monkeypatch):
+    """
+    測試在資料庫查詢中發生非預期通用 Exception 時，get_raw_content 是否能處理並返回 None。
+    """
+    db_path = setup_dummy_raw_lake_db # 雖然 db_path 在此測試中不直接使用，但 fixture 提供了路徑
+    reader = None
+
+    class MockCursorFails:
+        def fetchone(self):
+            raise Exception("Simulated DB Error During Fetch")
+        def execute(self, *args, **kwargs): # Mock cursor might also need an execute method
+            return self
+        def close(self): # Mock cursor might also need a close method
+            pass
+
+
+    class MockConnectionFailsExecute:
+        def execute(self, *args, **kwargs):
+            # The original code calls: self.con.execute(...).fetchone()
+            # So, self.con.execute should return something that has a fetchone method.
+            return MockCursorFails()
+
+        def cursor(self): # If execute is called on a cursor
+            return MockCursorFails()
+
+        def close(self):
+            pass # No-op for mock
+
+    def mock_duckdb_connect_for_execute_error(database, read_only):
+        return MockConnectionFailsExecute()
+
+    monkeypatch.setattr(duckdb, "connect", mock_duckdb_connect_for_execute_error)
+
+    try:
+        # db_path 傳遞給 RawLakeReader，但 duckdb.connect 會被 mock
+        reader = RawLakeReader(db_path=str(db_path))
+        content = reader.get_raw_content('any_hash_will_do')
+        assert content is None
+    finally:
+        if reader:
+            reader.close() # 呼叫 reader.close()，它會呼叫 self.con.close()，即 MockConnectionFailsExecute.close()
+        monkeypatch.undo() # 恢復 duckdb.connect
+
 def test_get_raw_content_empty(setup_dummy_raw_lake_db):
     """
     Tests retrieving existing raw content that is an empty byte string.
@@ -175,3 +253,19 @@ def test_init_handles_non_string_path_conversion(tmp_path: pathlib.Path):
              conn.close()
         if existent_db_path_obj.exists():
             existent_db_path_obj.unlink()
+
+def test_get_raw_content_returns_none_for_non_existent_hash(setup_dummy_raw_lake_db):
+    """
+    測試當 file_hash 不存在時，get_raw_content 是否返回 None。
+    此測試確保 'No content found' 的 print 語句路徑被執行。
+    """
+    db_path = setup_dummy_raw_lake_db
+    reader = None
+    try:
+        reader = RawLakeReader(db_path=str(db_path))
+        # 使用一個保證不存在的 hash
+        content = reader.get_raw_content('this_hash_definitely_does_not_exist_in_the_db')
+        assert content is None
+    finally:
+        if reader:
+            reader.close()
