@@ -122,66 +122,71 @@ class TransformationPipeline:
                 file_path = file_data['file_path']
                 print(f"\nProcessing file: {file_path} (Hash: {file_hash[:8]})")
 
-                # 1. Get Raw Content
-                raw_content = self.raw_lake_reader.get_raw_content(file_hash)
-                if raw_content is None:
-                    print(f"Error: Raw content not found for {file_hash} in Raw Lake. Skipping.")
-                    self.manifest_manager.update_status(file_hash, 'parse_error_no_content')
-                    continue
-
-                # 2. Identify Schema
-                schema_name = self.schema_manager.identify_schema_from_content(raw_content)
-                if schema_name is None:
-                    print(f"Warning: Could not identify schema for {file_path} (Hash: {file_hash[:8]}). Skipping.")
-                    self.manifest_manager.update_status(file_hash, 'parse_error_schema_not_identified')
-                    continue
-
-                schema_definition = self.schema_manager.schemas.get(schema_name)
-                if schema_definition is None: # Should be rare if identify_schema_from_content works
-                    print(f"Error: Schema definition not found for identified schema '{schema_name}'. Skipping.")
-                    self.manifest_manager.update_status(file_hash, 'parse_error_schema_missing')
-                    continue
-                print(f"Identified schema '{schema_name}' for {file_path}")
-
-                # 3. Parse Data
-                dataframe = self.parser.parse(raw_content, schema_definition)
-                if dataframe is None:
-                    print(f"Error: Failed to parse {file_path} (Hash: {file_hash[:8]}) using parser. Skipping.")
-                    self.manifest_manager.update_status(file_hash, 'parse_error_parser_failed')
-                    continue # Skip to the next file
-
-                print(f"Successfully parsed {file_path} using schema '{schema_name}'.")
-                # print("DataFrame head before validation:")
-                # print(dataframe.head())
-
-                # 4. Validate Data
-                validated_df = self.validator.validate(dataframe, schema_definition)
-
-                # Check if validation returned None or an empty DataFrame if the original was not empty
-                # This indicates critical validation issues.
-                if validated_df is None or (dataframe.shape[0] > 0 and validated_df.shape[0] == 0):
-                    print(f"Error: Data validation failed critically for {file_path} (Hash: {file_hash[:8]}). Skipping.")
-                    self.manifest_manager.update_status(file_hash, 'validation_error')
-                    continue # Skip to the next file
-
-                print(f"Data validation completed for {file_path}. Warnings may have been issued by the validator.")
-                # print("Validated DataFrame head:")
-                # print(validated_df.head())
-
-                # 5. Load Data
-                # Use 'table_name' from schema if defined, otherwise fallback to schema_name
-                table_name = schema_definition.get('table_name', schema_name)
-
                 try:
+                    # 1. Get Raw Content
+                    raw_content = self.raw_lake_reader.get_raw_content(file_hash)
+                    print(f"[進度] 成功從 Raw Lake 讀取檔案 {file_hash}")
+                    if raw_content is None:
+                        print(f"Error: Raw content not found for {file_hash} in Raw Lake. Skipping.")
+                        self.manifest_manager.update_status(file_hash, 'parse_error_no_content')
+                        continue
+
+                    # 2. Identify Schema
+                    schema_name = self.schema_manager.identify_schema_from_content(raw_content)
+                    print(f"[進度] 成功識別綱要為 {schema_name}")
+                    if schema_name is None:
+                        print(f"Warning: Could not identify schema for {file_path} (Hash: {file_hash[:8]}). Skipping.")
+                        self.manifest_manager.update_status(file_hash, 'parse_error_schema_not_identified')
+                        continue
+
+                    schema_definition = self.schema_manager.schemas.get(schema_name)
+                    if schema_definition is None: # Should be rare if identify_schema_from_content works
+                        print(f"Error: Schema definition not found for identified schema '{schema_name}'. Skipping.")
+                        self.manifest_manager.update_status(file_hash, 'parse_error_schema_missing')
+                        continue
+                    print(f"Identified schema '{schema_name}' for {file_path}")
+
+                    # 3. Parse Data
+                    dataframe = self.parser.parse(raw_content, schema_definition)
+                    print(f"[進度] 成功解析資料為 DataFrame")
+                    if dataframe is None:
+                        error_message = f"Error: Failed to parse {file_path} (Hash: {file_hash[:8]}) using parser. Parser returned None."
+                        print(error_message)
+                        raise Exception(error_message)
+
+                    print(f"Successfully parsed {file_path} using schema '{schema_name}'.")
+                    # print("DataFrame head before validation:")
+                    # print(dataframe.head())
+
+                    # 4. Validate Data
+                    validated_df = self.validator.validate(dataframe, schema_definition)
+                    print(f"[進度] 成功驗證 DataFrame")
+
+                    # Check if validation returned None or an empty DataFrame if the original was not empty
+                    # This indicates critical validation issues.
+                    if validated_df is None or (dataframe.shape[0] > 0 and validated_df.shape[0] == 0):
+                        error_message = f"Error: Data validation failed critically for {file_path} (Hash: {file_hash[:8]}). Validator returned None or empty DataFrame."
+                        print(error_message)
+                        raise Exception(error_message)
+
+                    print(f"Data validation completed for {file_path}. Warnings may have been issued by the validator.")
+                    # print("Validated DataFrame head:")
+                    # print(validated_df.head())
+
+                    # 5. Load Data
+                    # Use 'table_name' from schema if defined, otherwise fallback to schema_name
+                    table_name = schema_definition.get('table_name', schema_name)
+
                     self.processed_loader.load_dataframe(validated_df, table_name)
+                    print(f"[進度] 成功載入資料至 Processed DB")
                     self.manifest_manager.update_status(file_hash, 'processed')
-                    print(f"Successfully loaded data from {file_path} into table '{table_name}'. Updated manifest status to 'processed'.")
-                except duckdb.Error as e: # Catch specific DuckDB errors
-                    print(f"Error: Failed to load data from {file_path} (Hash: {file_hash[:8]}) into table '{table_name}'. Database error: {e}")
-                    self.manifest_manager.update_status(file_hash, 'load_error')
-                except Exception as e: # Catch other errors from load_dataframe (e.g., if connection was lost)
-                    print(f"Error: An unexpected error occurred while loading data from {file_path} (Hash: {file_hash[:8]}) into table '{table_name}': {e}")
-                    self.manifest_manager.update_status(file_hash, 'load_error')
+                    print(f"[成功] 檔案 {file_hash} 已成功處理完畢！")
+
+                except Exception as e:
+                    print(f"[錯誤] 處理檔案 {file_hash} 時發生嚴重錯誤: {e}")
+                    # Ensure manifest status is updated in case of such an error.
+                    if file_hash: # Ensure file_hash is available
+                        self.manifest_manager.update_status(file_hash, 'transformation_failed')
 
         finally:
             self.close()
