@@ -23,6 +23,7 @@ import pathlib  # Make sure pathlib is imported
 # they can be kept or refactored.
 
 
+@pytest.mark.filterwarnings("ignore:This process.*is multi-threaded, use of fork().*may lead to deadlocks.*:DeprecationWarning")
 def test_pipeline_full_run(tmp_path, caplog):  # Added caplog fixture
     """
     端到端整合測試. 模擬 PipelineOrchestrator 的完整執行流程
