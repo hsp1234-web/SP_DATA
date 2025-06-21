@@ -69,7 +69,6 @@ def test_some_invalid_data_min_value(mock_logger, basic_data):
     assert "is less than 0" in invalid_df.iloc[0]['quarantine_reason']
     assert invalid_df.iloc[0]['source_file'] == "test_source.csv"
 
-@pytest.mark.xfail(reason="舊有測試失敗，與本次修改無關")
 def test_invalid_data_min_value_with_non_numeric(mock_logger):
     data = pd.DataFrame({
         'col_val': [10, "abc", -5, 20, "xyz", 0]
@@ -82,7 +81,7 @@ def test_invalid_data_min_value_with_non_numeric(mock_logger):
     validator = Validator(rules_config, mock_logger)
     valid_df, invalid_df = validator.validate(data, "test_source.csv", "test_schema")
 
-    assert len(valid_df) == 2 # Rows with 10 and 20 (0 is not < 0)
+    assert len(valid_df) == 3 # 修正：有效的行應為 10, 20, 0，共 3 行
     assert valid_df['col_val'].isin([10, 20, 0]).all()
 
     assert len(invalid_df) == 3 # Rows with "abc", -5, "xyz"
