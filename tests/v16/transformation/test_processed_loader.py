@@ -106,7 +106,6 @@ def test_init_duckdb_connect_error_after_makedirs(mocker):
     # Verify os.makedirs was called
     assert os.makedirs.called
 
-@pytest.mark.xfail(reason="原始碼在 append 模式下 to_sql 異常時，except 區塊試圖存取未定義的 temp_view_name，此處的錯誤處理較脆弱，修改引發連鎖失敗，待後續重構")
 def test_load_dataframe_append_to_sql_error(processed_loader_with_mock_con, sample_dataframe, mocker):
     """測試在 append 模式下，如果 dataframe.to_sql 拋出 duckdb.Error，則該錯誤會被正確拋出。"""
     loader, mock_con = processed_loader_with_mock_con
