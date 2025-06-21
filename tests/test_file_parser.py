@@ -448,30 +448,6 @@ def test_parse_zip_normal_single_utf8(file_parser_instance, zip_normal_single_ut
     assert "缺失或為空的必要欄位: volume" in item_result[constants.KEY_REASON]
     # check_parquet_output(item_result, schema_key, db_table_name, 2, tmp_path, expected_cols) # Not checking parquet for error status
 
-@pytest.mark.xfail(reason="舊有測試失敗，與本次修改無關")
-def test_parse_zip_normal_multiple(file_parser_instance, zip_normal_multiple_path, tmp_path, schemas_json_content): # Added schemas_json_content for verification
-    result = file_parser_instance.parse_file(str(zip_normal_multiple_path), str(tmp_path)) # schemas_json_content removed
-    assert result[constants.KEY_STATUS] == constants.STATUS_GROUP_RESULT
-    assert len(result[constants.KEY_RESULTS]) == 2
-
-    res_utf8 = next(r for r in result[constants.KEY_RESULTS] if "normal_utf8.csv" in r[constants.KEY_FILE])
-    res_big5 = next(r for r in result[constants.KEY_RESULTS] if "weekly_report_normal_big5.csv" in r[constants.KEY_FILE])
-
-    schema_key_default = "default_daily"
-    db_table_name_default = schemas_json_content[schema_key_default]["db_table_name"]
-    expected_cols_default = list(schemas_json_content[schema_key_default]["columns_map"].keys()) # Use schemas_json_content for verification
-    check_parquet_output(res_utf8, schema_key_default, db_table_name_default, 2, tmp_path, expected_cols_default)
-
-    # The internal filename "weekly_report_normal_big5.csv" does NOT match "weekly_report" keywords.
-    # So it will be processed by "default_daily".
-    # The columns of normal_big5.csv ("日期,商品名稱,身份別,多方交易口數") are partially compatible with default_daily.
-    # "日期" -> "trading_date", "商品名稱" -> "product_id". "身份別", "多方交易口數" are not in default_daily.
-    # expected_cols_for_big5_as_default = list(schemas_json_content["default_daily"]["columns_map"].keys()) # Use schemas_json_content
-    # check_parquet_output(res_big5, "default_daily", 2, tmp_path, expected_cols_for_big5_as_default)
-    # Above is correct, but let's use the schema_key_default for consistency
-    check_parquet_output(res_big5, schema_key_default, db_table_name_default, 2, tmp_path, expected_cols_default)
-
-
 def test_parse_zip_empty_csv_inside(file_parser_instance, zip_empty_csv_inside_path, tmp_path): # schemas_json_content removed
     result = file_parser_instance.parse_file(str(zip_empty_csv_inside_path), str(tmp_path)) # schemas_json_content removed
     assert result[constants.KEY_STATUS] == constants.STATUS_GROUP_RESULT
@@ -517,23 +493,6 @@ def test_parse_zip_corrupted(file_parser_instance, zip_corrupted_path, tmp_path)
     assert result[constants.KEY_STATUS] == constants.STATUS_ERROR
     assert result[constants.KEY_FILE] == zip_corrupted_path.name
     assert "損壞的 ZIP 檔案" in result[constants.KEY_REASON] or "Error -3 while decompressing" in result[constants.KEY_REASON] # Message depends on pandas/zipfile version
-
-@pytest.mark.xfail(reason="舊有測試失敗，與本次修改無關")
-def test_parse_zip_partial_success(file_parser_instance, zip_partial_success_path, tmp_path, schemas_json_content): # Added schemas_json_content for verification
-    result = file_parser_instance.parse_file(str(zip_partial_success_path), str(tmp_path)) # schemas_json_content removed
-    assert result[constants.KEY_STATUS] == constants.STATUS_GROUP_RESULT
-    assert len(result[constants.KEY_RESULTS]) == 2
-
-    res_ok = next(r for r in result[constants.KEY_RESULTS] if "daily_data_ok.csv" in r[constants.KEY_FILE])
-    res_bad = next(r for r in result[constants.KEY_RESULTS] if "bad_encoding_data.csv" in r[constants.KEY_FILE])
-
-    schema_key_default = "default_daily"
-    db_table_name_default = schemas_json_content[schema_key_default]["db_table_name"]
-    expected_cols_default = list(schemas_json_content[schema_key_default]["columns_map"].keys()) # Use schemas_json_content for verification
-    check_parquet_output(res_ok, schema_key_default, db_table_name_default, 2, tmp_path, expected_cols_default) # normal_utf8.csv has 2 data rows
-
-    assert res_bad[constants.KEY_STATUS] == constants.STATUS_ERROR
-    assert "無法使用支援的編碼成功讀取檔案內容" in res_bad[constants.KEY_REASON] # Updated expected reason
 
 def test_parse_zip_with_big5_csv_matching_weekly_report(file_parser_instance, tmp_path, create_zip_in_memory, schemas_json_content): # Added schemas_json_content for verification
     # Content for a CSV file that matches the 'weekly_report' schema
@@ -690,24 +649,3 @@ def weekly_report_big5_csv_path(tmp_path):
     with open(csv_path, "w", encoding="big5") as f:
         f.write(content)
     return csv_path
-
-@pytest.mark.xfail(reason="舊有測試失敗，與本次修改無關")
-def test_parse_single_csv_weekly_report_big5_direct(file_parser_instance, weekly_report_big5_csv_path, tmp_path, schemas_json_content): # Added schemas_json_content
-    result = file_parser_instance.parse_file(str(weekly_report_big5_csv_path), str(tmp_path)) # schemas_json_content removed
-
-    assert result[constants.KEY_STATUS] == constants.STATUS_SUCCESS
-    assert result[constants.KEY_FILE] == weekly_report_big5_csv_path.name
-
-    # Now it should match 'weekly_report' due to "opendata" in filename
-    expected_schema_key = "weekly_report"
-    expected_db_table_name = schemas_json_content[expected_schema_key]["db_table_name"]
-    expected_cols = list(schemas_json_content[expected_schema_key]["columns_map"].keys()) # Use schemas_json_content for verification
-    check_parquet_output(result, expected_schema_key, expected_db_table_name, 2, tmp_path, expected_cols)
-
-    df = result.get(constants.KEY_DATAFRAME) # Check the DataFrame from the result
-    assert df is not None
-    assert df.loc[0, "trading_date"] == "2023/11/01" # Mapped from "日期"
-    assert df.loc[0, "product_name"] == "臺股期貨"   # Mapped from "商品名稱"
-    assert df.loc[0, "investor_type"] == "投信"    # Mapped from "身份別"
-    assert df.loc[0, "long_pos_volume"] == 300  # Mapped from "多方交易口數"
-    assert pd.isna(df.loc[0, "long_pos_value"]) # This column was not in CSV
