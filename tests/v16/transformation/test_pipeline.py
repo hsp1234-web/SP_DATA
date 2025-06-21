@@ -33,10 +33,11 @@ def transformation_pipeline_env(tmp_path):
             "encoding": "utf-8",
             "delimiter": ",",
             "csv_skip_rows": 1, # Skip keyword line
+            "unique_key": ["id"], # 加入 unique_key
             "columns": {
-                "id": {"dtype": "integer", "nullable": False},
-                "name": {"dtype": "string", "nullable": True},
-                "value": {"dtype": "float", "nullable": True}
+                "id": {"dtype": "integer", "nullable": False, "db_type": "INTEGER"},
+                "name": {"dtype": "string", "nullable": True, "db_type": "VARCHAR"},
+                "value": {"dtype": "float", "nullable": True, "db_type": "DOUBLE"}
             }
         },
         "csv_validation_error": {

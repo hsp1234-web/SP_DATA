@@ -67,6 +67,12 @@ class DataParser:
                 # If we skip more rows than exist, return an empty DataFrame with correct columns
                 df = pd.DataFrame(columns=column_names)
 
+            # 結構化補完 (Structural Completion)
+            # 從 schema_definition 中，獲取所有目標欄位的列表。
+            # 注意：我們已經在前面從 schema 中獲取了 column_names
+            # 使用 parsed_df = parsed_df.reindex(columns=target_columns, fill_value=None) 來強制補完 DataFrame 的欄位。
+            if column_names: # 確保 column_names 存在且不為空
+                df = df.reindex(columns=column_names, fill_value=None)
 
             return df
 

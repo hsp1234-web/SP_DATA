@@ -151,28 +151,28 @@ class TransformationPipeline:
 
                     # 3. Parse Data
                     dataframe = self.parser.parse(raw_content, schema_definition)
-                    print(f"[進度] 成功解析資料為 DataFrame")
+                    # parser.py 內部會印出詳細錯誤並回傳 None
                     if dataframe is None:
-                        error_message = f"Error: Failed to parse {file_path} (Hash: {file_hash[:8]}) using parser. Parser returned None."
-                        print(error_message)
-                        raise Exception(error_message)
+                        print(f"[進度] 解析資料失敗 {file_path} (Hash: {file_hash[:8]})")
+                        # parser.py 內部已經 print 詳細錯誤
+                        # 根據 parser 的錯誤類型 (例如解碼、Pandas內部錯誤)來設定狀態
+                        # 這裡假設 parser 失敗主要是 parse_error_parser_failed
+                        # 如果 parser.py 能拋出更具體的錯誤，這裡可以捕捉
+                        self.manifest_manager.update_status(file_hash, 'parse_error_parser_failed')
+                        continue # 處理下一個檔案
+                    print(f"[進度] 成功解析資料為 DataFrame for {file_path}")
 
-                    print(f"Successfully parsed {file_path} using schema '{schema_name}'.")
-                    # print("DataFrame head before validation:")
-                    # print(dataframe.head())
 
                     # 4. Validate Data
                     validated_df = self.validator.validate(dataframe, schema_definition)
-                    print(f"[進度] 成功驗證 DataFrame")
+                    # validator.py 內部會印出詳細錯誤並回傳 None
+                    if validated_df is None or (dataframe.shape[0] > 0 and validated_df.empty):
+                        print(f"[進度] 資料驗證失敗 {file_path} (Hash: {file_hash[:8]})")
+                        # validator.py 內部已經 print 詳細錯誤
+                        self.manifest_manager.update_status(file_hash, 'validation_error')
+                        continue # 處理下一個檔案
+                    print(f"[進度] 成功驗證 DataFrame for {file_path}")
 
-                    # Check if validation returned None or an empty DataFrame if the original was not empty
-                    # This indicates critical validation issues.
-                    if validated_df is None or (dataframe.shape[0] > 0 and validated_df.shape[0] == 0):
-                        error_message = f"Error: Data validation failed critically for {file_path} (Hash: {file_hash[:8]}). Validator returned None or empty DataFrame."
-                        print(error_message)
-                        raise Exception(error_message)
-
-                    print(f"Data validation completed for {file_path}. Warnings may have been issued by the validator.")
                     # print("Validated DataFrame head:")
                     # print(validated_df.head())
 
@@ -180,17 +180,33 @@ class TransformationPipeline:
                     # Use 'table_name' from schema if defined, otherwise fallback to schema_name
                     table_name = schema_definition.get('table_name', schema_name)
 
-                    self.processed_loader.load_dataframe(validated_df, table_name)
+                    # 將 schema_definition 傳遞給 load_dataframe
+                    self.processed_loader.load_dataframe(validated_df, table_name, schema_definition)
                     print(f"[進度] 成功載入資料至 Processed DB")
                     self.manifest_manager.update_status(file_hash, 'processed')
                     print(f"[成功] 檔案 {file_hash} 已成功處理完畢！")
 
-                except Exception as e:
-                    print(f"[錯誤] 處理檔案 {file_hash} 時發生嚴重錯誤: {e}")
-                    # Ensure manifest status is updated in case of such an error.
+                except (ValueError, TypeError, KeyError) as val_err: # 一般資料處理/驗證錯誤
+                    error_msg = f"資料處理/驗證錯誤: {val_err}"
+                    print(f"[錯誤] 處理檔案 {file_hash} 時發生錯誤: {error_msg}")
+                    if file_hash:
+                        self.manifest_manager.update_status(file_hash, 'validation_error')
+                except pd.errors.ParserError as parse_err: # Pandas 解析錯誤
+                    error_msg = f"Pandas 解析錯誤: {parse_err}"
+                    print(f"[錯誤] 處理檔案 {file_hash} 時發生錯誤: {error_msg}")
+                    if file_hash:
+                        self.manifest_manager.update_status(file_hash, 'parse_error_parser_failed')
+                except UnicodeDecodeError as uni_err: # 編碼錯誤
+                    error_msg = f"編碼錯誤: {uni_err}"
+                    print(f"[錯誤] 處理檔案 {file_hash} 時發生錯誤: {error_msg}")
+                    if file_hash:
+                        # 雖然 parser.py 內部會捕捉這個，但如果它逃逸了，這裡可以捕捉
+                        self.manifest_manager.update_status(file_hash, 'parse_error_parser_failed')
+                except Exception as e: # 其他所有未預期錯誤
+                    error_msg = f"未預期錯誤: {e}"
+                    print(f"[錯誤] 處理檔案 {file_hash} 時發生嚴重錯誤: {error_msg}")
                     if file_hash: # Ensure file_hash is available
                         self.manifest_manager.update_status(file_hash, 'transformation_failed')
-
         finally:
             self.close()
 
