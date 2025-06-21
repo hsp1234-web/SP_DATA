@@ -63,6 +63,22 @@ class DataValidator:
 
         return processed_df
 
+    def _validate_enum(self, value: any, valid_enums: list[str]) -> None:
+        """
+        驗證提供的值是否為有效的枚舉成員。
+
+        Args:
+            value: 要驗證的值。
+            valid_enums: 有效枚舉值的列表。
+
+        Raises:
+            ValueError: 如果值不是字串，或者值不在有效枚舉列表中。
+        """
+        if not isinstance(value, str):
+            raise ValueError("輸入值必須是字串")
+        if value not in valid_enums:
+            raise ValueError(f"'{value}' 是不合法的枚舉值。有效的枚舉值為：{valid_enums}")
+
 # Example Usage (optional, for testing)
 if __name__ == '__main__':
     # Sample schema
