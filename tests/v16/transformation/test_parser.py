@@ -24,6 +24,72 @@ def test_parse_utf8_csv_success(data_parser):
     assert result_df is not None
     assert_frame_equal(result_df, expected_df)
 
+# --- Tests for csv_skip_rows functionality ---
+
+def _get_base_schema_for_skip_rows_test(skip_rows_count: int):
+    """Helper to create a basic schema for skip_rows tests."""
+    return {
+        'encoding': 'utf-8',
+        'delimiter': ',',
+        'columns': ['col_a', 'col_b', 'col_c'],
+        'csv_skip_rows': skip_rows_count
+    }
+
+RAW_CSV_CONTENT_FOR_SKIP_TESTS = b"""header1,header2,header3
+data1_1,data1_2,data1_3
+data2_1,data2_2,data2_3
+data3_1,data3_2,data3_3
+"""
+# Total 4 lines. Header + 3 data lines.
+
+def test_parse_csv_skip_rows_zero(data_parser):
+    """測試當 csv_skip_rows 為 0 時，沒有任何行被跳過。"""
+    schema = _get_base_schema_for_skip_rows_test(0)
+
+    # 由於 parse 方法會使用 schema 中的 columns 作為 header=None 的 names，
+    # 所以預期的 DataFrame 會將 CSV 的第一行也視為數據行，並使用 schema 中的 names。
+    expected_data = [
+        ['header1', 'header2', 'header3'],
+        ['data1_1', 'data1_2', 'data1_3'],
+        ['data2_1', 'data2_2', 'data2_3'],
+        ['data3_1', 'data3_2', 'data3_3']
+    ]
+    expected_df = pd.DataFrame(expected_data, columns=['col_a', 'col_b', 'col_c'])
+
+    result_df = data_parser.parse(RAW_CSV_CONTENT_FOR_SKIP_TESTS, schema)
+
+    assert result_df is not None
+    assert_frame_equal(result_df, expected_df)
+    assert len(result_df) == 4, "當 csv_skip_rows 為 0 時，應包含所有 4 行"
+
+def test_parse_csv_skip_rows_equals_total_lines(data_parser):
+    """測試當 csv_skip_rows 等於 CSV 總行數時，解析結果為空 DataFrame。"""
+    schema = _get_base_schema_for_skip_rows_test(4) # CSV 有 4 行
+
+    # 預期結果是一個空的 DataFrame，但欄位與 schema 中定義的一致
+    expected_df = pd.DataFrame(columns=['col_a', 'col_b', 'col_c'])
+
+    result_df = data_parser.parse(RAW_CSV_CONTENT_FOR_SKIP_TESTS, schema)
+
+    assert result_df is not None
+    assert result_df.empty, "DataFrame 應為空"
+    assert_frame_equal(result_df, expected_df, check_dtype=False) # 空 DF 的 dtype 可能不一致
+
+def test_parse_csv_skip_rows_greater_than_total_lines(data_parser):
+    """測試當 csv_skip_rows 大於 CSV 總行數時，解析結果為空 DataFrame，且不應拋出錯誤。"""
+    schema = _get_base_schema_for_skip_rows_test(5) # CSV 只有 4 行
+
+    expected_df = pd.DataFrame(columns=['col_a', 'col_b', 'col_c'])
+
+    result_df = data_parser.parse(RAW_CSV_CONTENT_FOR_SKIP_TESTS, schema)
+
+    assert result_df is not None
+    assert result_df.empty, "DataFrame 應為空"
+    # 對於空的 DataFrame，欄位順序和型態可能需要特別注意。
+    # 如果 schema 中的 columns 定義了順序，那麼空的 DataFrame 應該遵循這個順序。
+    # dtypes 可能都是 object。
+    assert_frame_equal(result_df, expected_df, check_dtype=False)
+
 def test_parse_big5_piped_success(data_parser):
     """
     Tests successful parsing of BIG5 encoded, pipe-delimited data.

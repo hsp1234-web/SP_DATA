@@ -169,3 +169,76 @@ def test_schema_manager_init_io_error(tmp_path: pathlib.Path, mocker, capsys):
 
     # 因此，上面的 pytest.raises(PermissionError) 是正確的。
     # 我們不需要檢查 manager.schemas，因為如果異常拋出，manager 可能未成功建立。
+
+def test_identify_schema_keyword_case_insensitivity(tmp_path: pathlib.Path):
+    """測試 identify_schema_from_content 對於 schema 關鍵字的大小寫不敏感。"""
+    schemas_data = {
+        "case_test_schema": {"keywords": ["MyKeyword", "AnotherKEY"]}
+    }
+    schema_file = tmp_path / "case_test_schemas.json"
+    with open(schema_file, 'w', encoding='utf-8') as f:
+        json.dump(schemas_data, f)
+    manager = SchemaManager(str(schema_file))
+
+    # 測試不同的關鍵字大小寫組合
+    content_lower = "this is mykeyword here".encode('utf-8')
+    content_upper = "AND ANOTHERKEY IS PRESENT".encode('utf-8')
+    content_mixed = "Some MyKeYwOrD text".encode('utf-8')
+    content_unrelated = "no relevant words".encode('utf-8')
+
+    assert manager.identify_schema_from_content(content_lower) == "case_test_schema", "小寫關鍵字應匹配"
+    assert manager.identify_schema_from_content(content_upper) == "case_test_schema", "大寫關鍵字應匹配"
+    assert manager.identify_schema_from_content(content_mixed) == "case_test_schema", "混合大小寫關鍵字應匹配"
+    assert manager.identify_schema_from_content(content_unrelated) is None, "不相關內容不應匹配"
+
+def test_identify_schema_multiple_matches_priority(tmp_path: pathlib.Path):
+    """
+    測試當檔案內容可能匹配到多個 schema 關鍵字時，
+    identify_schema_from_content 會返回字典中第一個匹配到的 schema。
+    """
+    # 注意：Python 3.7+ 字典保持插入順序。
+    # 'schema_A' 先定義。
+    # 'schema_B' 後定義。
+    schemas_data_order1 = {
+        "schema_A": {"keywords": ["KeywordA", "CommonKeyword"]},
+        "schema_B": {"keywords": ["KeywordB", "CommonKeyword"]},
+        "schema_C": {"keywords": ["KeywordC"]}
+    }
+    schema_file_order1 = tmp_path / "priority_schemas1.json"
+    with open(schema_file_order1, 'w', encoding='utf-8') as f:
+        json.dump(schemas_data_order1, f)
+    manager_order1 = SchemaManager(str(schema_file_order1))
+
+    # 內容包含 "CommonKeyword"，它存在於 schema_A 和 schema_B。
+    # 因為 schema_A 先定義，所以應該匹配到 schema_A。
+    content_common = "This content has CommonKeyword.".encode('utf-8')
+    assert manager_order1.identify_schema_from_content(content_common) == "schema_A"
+
+    # 內容只包含 "KeywordB"，應該匹配到 schema_B。
+    content_b_only = "This content has KeywordB only.".encode('utf-8')
+    assert manager_order1.identify_schema_from_content(content_b_only) == "schema_B"
+
+    # 內容包含 "KeywordA" 和 "KeywordB"。因為 schema_A 先，所以匹配 schema_A。
+    content_a_and_b = "This content has KeywordA and KeywordB.".encode('utf-8')
+    assert manager_order1.identify_schema_from_content(content_a_and_b) == "schema_A"
+
+    # 更改 schema 順序來驗證行為
+    schemas_data_order2 = {
+        "schema_B": {"keywords": ["KeywordB", "CommonKeyword"]}, # schema_B 現在先定義
+        "schema_A": {"keywords": ["KeywordA", "CommonKeyword"]},
+        "schema_C": {"keywords": ["KeywordC"]}
+    }
+    schema_file_order2 = tmp_path / "priority_schemas2.json"
+    with open(schema_file_order2, 'w', encoding='utf-8') as f:
+        json.dump(schemas_data_order2, f)
+    manager_order2 = SchemaManager(str(schema_file_order2))
+
+    # 內容包含 "CommonKeyword"。因為 schema_B 現在先定義，所以應該匹配到 schema_B。
+    assert manager_order2.identify_schema_from_content(content_common) == "schema_B"
+
+    # 內容包含 "KeywordA" 和 "KeywordB"。因為 schema_B 先，所以匹配 schema_B。
+    assert manager_order2.identify_schema_from_content(content_a_and_b) == "schema_B"
+
+    # 內容只包含 "KeywordA"，仍然匹配 schema_A。
+    content_a_only = "This content has KeywordA only.".encode('utf-8')
+    assert manager_order2.identify_schema_from_content(content_a_only) == "schema_A"

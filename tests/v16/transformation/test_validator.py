@@ -257,5 +257,21 @@ class TestDataValidator: # 移除 unittest.TestCase 的繼承
         with pytest.raises(ValueError, match="'CHERRY' 是不合法的枚舉值。有效的枚舉值為：\\['APPLE', 'BANANA'\\]"):
             self.validator._validate_enum('CHERRY', valid_enums)
 
+    def test_validate_empty_columns_in_schema(self):
+        """測試當 schema 中的 'columns' 定義為空時，validate 應直接返回原始 DataFrame (的副本)。"""
+        data = {'col_a': [1, 2], 'col_b': ['x', 'y']}
+        df = pd.DataFrame(data)
+        original_df_copy = df.copy() # 用於比較
+
+        # Schema with empty 'columns' dictionary
+        schema_empty_cols = {'columns': {}}
+        validated_df_empty = self.validator.validate(df.copy(), schema_empty_cols)
+        assert_frame_equal(validated_df_empty, original_df_copy, check_dtype=True)
+
+        # Schema where 'columns' key is missing (should also result in no validation)
+        schema_missing_cols_key = {}
+        validated_df_missing_key = self.validator.validate(df.copy(), schema_missing_cols_key)
+        assert_frame_equal(validated_df_missing_key, original_df_copy, check_dtype=True)
+
 # if __name__ == '__main__':
 #     unittest.main() # 註解掉或移除 unittest.main()
