@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 import json
 import io
 import zipfile
@@ -9,15 +10,26 @@ import zipfile
 #           temp_dir = tmp_path_factory.mktemp("data")
 #           ...
 
+@pytest.fixture(scope="session")
+def project_root() -> Path:
+    """提供專案根目錄的路徑 (包含 pyproject.toml 的目錄)。"""
+    # __file__ 是目前 conftest.py 的路徑
+    # .parent 是 tests/ 目錄
+    # .parent.parent 是專案根目錄
+    return Path(__file__).parent.parent
+
+
 @pytest.fixture
-def schemas_json_content():
+def schemas_json_content(project_root: Path):
     """
     提供 config/schemas.json 的內容。
     這個 fixture會讀取並解析 JSON 檔案，供測試函式使用。
+    它使用 project_root fixture 來確保路徑的正確性。
     """
-    # 確保相對於專案根目錄的路徑正確
-    # 根據 ls() 的輸出，schemas.json 位於 config/schemas.json
-    with open("config/schemas.json", "r", encoding="utf-8") as f:
+    schemas_file_path = project_root / "config" / "schemas.json"
+    # 實際應用中，最好檢查檔案是否存在，並在找不到時引發明確錯誤
+    # assert schemas_file_path.exists(), f"Schemas JSON 檔案未在預期路徑找到: {schemas_file_path}"
+    with open(schemas_file_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 @pytest.fixture
