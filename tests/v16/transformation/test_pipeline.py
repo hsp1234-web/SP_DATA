@@ -479,6 +479,257 @@ def test_pipeline_init_handles_dependency_errors(
     # the actual exception raised should be the one from the dependency.
     assert expected_error_message_part in str(excinfo.value)
 
+def test_run_handles_no_pending_files(monkeypatch, tmp_path, capsys):
+    """測試 TransformationPipeline.run() 在沒有待處理檔案時的行為。"""
+    mock_config_dict = {
+        "database": {
+            "manifest_db_path": str(tmp_path / "manifest.db"),
+            "raw_lake_db_path": str(tmp_path / "raw_lake.db"),
+            "processed_db_path": str(tmp_path / "processed.db")
+        },
+        "paths": {"schema_config_path": str(tmp_path / "schemas.json")}
+    }
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.load_config", lambda x: mock_config_dict)
+    monkeypatch.setattr(pathlib.Path, "mkdir", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.duckdb.connect", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.SchemaManager", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.DataParser", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.DataValidator", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.ProcessedDBLoader", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.RawLakeReader", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.ManifestManager", MagicMock())
+
+    pipeline = TransformationPipeline(config_path="dummy_config.yaml")
+
+    # Mock find_pending_files to return an empty list
+    monkeypatch.setattr(pipeline, "find_pending_files", lambda: [])
+
+    # Mock close methods of dependencies that would be called in finally
+    # These are instances on the pipeline object
+    pipeline.manifest_con.close = MagicMock() # manifest_con is created by mocked duckdb.connect
+    pipeline.raw_lake_reader.close = MagicMock()
+    pipeline.manifest_manager.close = MagicMock()
+    pipeline.processed_loader.close = MagicMock()
+
+
+    pipeline.run()
+
+    captured = capsys.readouterr()
+    assert "目前沒有待處理的檔案。" in captured.out
+    pipeline.manifest_con.close.assert_called_once()
+    pipeline.raw_lake_reader.close.assert_called_once()
+    pipeline.manifest_manager.close.assert_called_once()
+    pipeline.processed_loader.close.assert_called_once()
+
+def test_run_handles_validation_failure(monkeypatch, tmp_path, capsys):
+    """測試 pipeline.run() 在 validator.validate() 返回 None (驗證失敗) 時的行為。"""
+    mock_config_dict = {
+        "database": {
+            "manifest_db_path": str(tmp_path / "manifest.db"),
+            "raw_lake_db_path": str(tmp_path / "raw_lake.db"),
+            "processed_db_path": str(tmp_path / "processed.db")
+        },
+        "paths": {"schema_config_path": str(tmp_path / "schemas.json")}
+    }
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.load_config", lambda x: mock_config_dict)
+    monkeypatch.setattr(pathlib.Path, "mkdir", MagicMock())
+    # General duckdb.connect mock for __init__
+    mock_initial_db_conn = MagicMock(name="initial_db_conn")
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.duckdb.connect", MagicMock(return_value=mock_initial_db_conn))
+
+    # Mock dependencies' __init__ methods
+    mock_rrl_instance = MagicMock(name="raw_lake_reader_instance")
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.RawLakeReader", MagicMock(return_value=mock_rrl_instance))
+
+    mock_sm_instance = MagicMock(name="schema_manager_instance")
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.SchemaManager", MagicMock(return_value=mock_sm_instance))
+
+    mock_dp_instance = MagicMock(name="data_parser_instance")
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.DataParser", MagicMock(return_value=mock_dp_instance))
+
+    mock_dv_instance = MagicMock(name="data_validator_instance")
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.DataValidator", MagicMock(return_value=mock_dv_instance))
+
+    mock_mm_instance = MagicMock(name="manifest_manager_instance")
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.ManifestManager", MagicMock(return_value=mock_mm_instance))
+
+    mock_pdl_instance = MagicMock(name="processed_db_loader_instance")
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.ProcessedDBLoader", MagicMock(return_value=mock_pdl_instance))
+
+    pipeline = TransformationPipeline(config_path="dummy_config.yaml")
+    # Ensure close methods on the actual instances are mocked for the finally block in run()
+    pipeline.manifest_con.close = MagicMock(name="manifest_con_close_mock")
+    mock_rrl_instance.close = MagicMock(name="rrl_close_mock")
+    mock_mm_instance.close = MagicMock(name="mm_close_mock")
+    mock_pdl_instance.close = MagicMock(name="pdl_close_mock")
+
+
+    # Setup for a single file to be processed
+    test_file_hash = 'hash_validation_fail'
+    test_file_path = '/fake/validation_fail.csv'
+    mock_pending_files = [{'file_hash': test_file_hash, 'file_path': test_file_path, 'status': 'loaded_to_raw_lake'}]
+    monkeypatch.setattr(pipeline, "find_pending_files", lambda: mock_pending_files)
+
+    # Mock interactions within the loop for this file
+    mock_rrl_instance.get_raw_content.return_value = b"raw,csv,data"
+    mock_sm_instance.identify_schema_from_content.return_value = "test_schema"
+    mock_schema_def = {"columns": {"col1": {"dtype": "string"}}} # Simplified schema
+    mock_sm_instance.schemas = {"test_schema": mock_schema_def} # Make .get work
+
+    mock_df = pd.DataFrame({'col1': ['data']}) # Dummy DataFrame
+    mock_dp_instance.parse.return_value = mock_df
+
+    # Key mock: validator.validate returns None
+    mock_dv_instance.validate.return_value = None
+
+    pipeline.run()
+
+    # Assert that update_status was called with 'validation_error'
+    mock_mm_instance.update_status.assert_called_once_with(test_file_hash, 'validation_error')
+
+    # Assert that no attempt was made to load data
+    mock_pdl_instance.load_dataframe.assert_not_called()
+
+    captured = capsys.readouterr()
+    assert f"[進度] 資料驗證失敗 {test_file_path} (Hash: {test_file_hash[:8]})" in captured.out
+
+    # Verify all relevant close methods were called
+    pipeline.manifest_con.close.assert_called_once()
+    mock_rrl_instance.close.assert_called_once()
+    mock_mm_instance.close.assert_called_once() # This instance is pipeline.manifest_manager
+    mock_pdl_instance.close.assert_called_once()
+
+@pytest.mark.parametrize(
+    "exception_to_raise, expected_status, expected_log_message_part",
+    [
+        (ValueError("Simulated ValueError in parse"), 'validation_error', "資料處理/驗證錯誤: Simulated ValueError in parse"),
+        (pd.errors.ParserError("Simulated ParserError"), 'parse_error_parser_failed', "Pandas 解析錯誤: Simulated ParserError"),
+        (UnicodeDecodeError("utf-8", b"\x80", 0, 1, "invalid start byte"), 'parse_error_parser_failed', "編碼錯誤: 'utf-8' codec can't decode byte 0x80 in position 0: invalid start byte"),
+        (Exception("Simulated Generic Error in parse"), 'transformation_failed', "未預期錯誤: Simulated Generic Error in parse"),
+    ]
+)
+def test_run_main_loop_exception_handling(
+    monkeypatch, tmp_path, capsys,
+    exception_to_raise, expected_status, expected_log_message_part
+):
+    """測試 pipeline.run() 在處理檔案迴圈中，對不同類型的例外進行處理並更新 manifest 狀態。"""
+    mock_config_dict = {
+        "database": {
+            "manifest_db_path": str(tmp_path / "manifest.db"),
+            "raw_lake_db_path": str(tmp_path / "raw_lake.db"),
+            "processed_db_path": str(tmp_path / "processed.db")
+        },
+        "paths": {"schema_config_path": str(tmp_path / "schemas.json")}
+    }
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.load_config", lambda x: mock_config_dict)
+    monkeypatch.setattr(pathlib.Path, "mkdir", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.duckdb.connect", MagicMock(return_value=MagicMock(name="initial_db_conn")))
+
+    mock_rrl_instance = MagicMock(name="raw_lake_reader_instance")
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.RawLakeReader", MagicMock(return_value=mock_rrl_instance))
+    mock_sm_instance = MagicMock(name="schema_manager_instance")
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.SchemaManager", MagicMock(return_value=mock_sm_instance))
+    mock_dp_instance = MagicMock(name="data_parser_instance")
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.DataParser", MagicMock(return_value=mock_dp_instance))
+    mock_dv_instance = MagicMock(name="data_validator_instance") # Not used in this path, but needed for init
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.DataValidator", MagicMock(return_value=mock_dv_instance))
+    mock_mm_instance = MagicMock(name="manifest_manager_instance")
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.ManifestManager", MagicMock(return_value=mock_mm_instance))
+    mock_pdl_instance = MagicMock(name="processed_db_loader_instance") # Not used in this path, but needed for init
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.ProcessedDBLoader", MagicMock(return_value=mock_pdl_instance))
+
+    pipeline = TransformationPipeline(config_path="dummy_config.yaml")
+    # Mock close methods
+    pipeline.manifest_con.close = MagicMock(name="manifest_con_close_mock")
+    mock_rrl_instance.close = MagicMock(name="rrl_close_mock")
+    mock_mm_instance.close = MagicMock(name="mm_close_mock")
+    mock_pdl_instance.close = MagicMock(name="pdl_close_mock")
+
+    test_file_hash = 'hash_exception_test'
+    test_file_path = '/fake/exception_test.file'
+    mock_pending_files = [{'file_hash': test_file_hash, 'file_path': test_file_path, 'status': 'loaded_to_raw_lake'}]
+    monkeypatch.setattr(pipeline, "find_pending_files", lambda: mock_pending_files)
+
+    mock_rrl_instance.get_raw_content.return_value = b"some content"
+    mock_sm_instance.identify_schema_from_content.return_value = "some_schema"
+    mock_sm_instance.schemas = {"some_schema": {"columns": {}}} # Simplified schema
+
+    # Configure the DataParser's parse method to raise the specified exception
+    mock_dp_instance.parse.side_effect = exception_to_raise
+
+    pipeline.run()
+
+    mock_mm_instance.update_status.assert_called_once_with(test_file_hash, expected_status)
+
+    captured = capsys.readouterr()
+    assert expected_log_message_part in captured.out
+
+    # Ensure no data loading attempt was made
+    mock_pdl_instance.load_dataframe.assert_not_called()
+
+    # Verify all relevant close methods were called
+    pipeline.manifest_con.close.assert_called_once()
+    mock_rrl_instance.close.assert_called_once()
+    mock_mm_instance.close.assert_called_once()
+    mock_pdl_instance.close.assert_called_once()
+
+def test_run_handles_error_on_final_connection_close(monkeypatch, tmp_path, capsys):
+    """測試 pipeline.run() 在最後關閉 manifest_con 時發生錯誤，程式是否能優雅處理。"""
+    mock_config_dict = {
+        "database": {
+            "manifest_db_path": str(tmp_path / "manifest.db"),
+            "raw_lake_db_path": str(tmp_path / "raw_lake.db"),
+            "processed_db_path": str(tmp_path / "processed.db")
+        },
+        "paths": {"schema_config_path": str(tmp_path / "schemas.json")}
+    }
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.load_config", lambda x: mock_config_dict)
+    monkeypatch.setattr(pathlib.Path, "mkdir", MagicMock())
+
+    # Mock duckdb.connect to return a connection object that will be later modified
+    mock_db_conn_instance = MagicMock(name="db_conn_for_manifest")
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.duckdb.connect", MagicMock(return_value=mock_db_conn_instance))
+
+    # Mock other dependencies for __init__
+    mock_rrl_instance = MagicMock(name="raw_lake_reader_instance")
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.RawLakeReader", MagicMock(return_value=mock_rrl_instance))
+    mock_mm_instance = MagicMock(name="manifest_manager_instance")
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.ManifestManager", MagicMock(return_value=mock_mm_instance))
+    mock_pdl_instance = MagicMock(name="processed_db_loader_instance")
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.ProcessedDBLoader", MagicMock(return_value=mock_pdl_instance))
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.SchemaManager", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.DataParser", MagicMock())
+    monkeypatch.setattr("src.sp_data_v16.transformation.pipeline.DataValidator", MagicMock())
+
+
+    pipeline = TransformationPipeline(config_path="dummy_config.yaml")
+
+    # Mock find_pending_files to return an empty list to quickly get to the finally block
+    monkeypatch.setattr(pipeline, "find_pending_files", lambda: [])
+
+    # Mock the close method of the specific manifest_con instance to raise an error
+    pipeline.manifest_con.close = MagicMock(side_effect=duckdb.Error("Simulated error closing manifest_con"))
+
+    # Mock other close methods to ensure they are still called
+    mock_rrl_instance.close = MagicMock(name="rrl_close_mock")
+    mock_mm_instance.close = MagicMock(name="mm_close_mock") # This is pipeline.manifest_manager.close()
+    mock_pdl_instance.close = MagicMock(name="pdl_close_mock")
+
+
+    try:
+        pipeline.run() # Should not raise an unhandled exception
+    except Exception as e:
+        pytest.fail(f"pipeline.run() raised an unexpected exception during final close: {e}")
+
+    captured = capsys.readouterr()
+    assert "Error closing manifest_con: Simulated error closing manifest_con" in captured.out
+
+    # Verify that other close methods were still attempted
+    mock_rrl_instance.close.assert_called_once()
+    mock_mm_instance.close.assert_called_once()
+    mock_pdl_instance.close.assert_called_once()
+
+
 def test_find_pending_files_handles_no_results(monkeypatch, tmp_path):
     """測試 find_pending_files 在資料庫查詢無結果時返回空列表。"""
     mock_config_dict = {

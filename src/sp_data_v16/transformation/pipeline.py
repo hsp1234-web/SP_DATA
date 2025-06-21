@@ -186,11 +186,6 @@ class TransformationPipeline:
                     self.manifest_manager.update_status(file_hash, 'processed')
                     print(f"[成功] 檔案 {file_hash} 已成功處理完畢！")
 
-                except (ValueError, TypeError, KeyError) as val_err: # 一般資料處理/驗證錯誤
-                    error_msg = f"資料處理/驗證錯誤: {val_err}"
-                    print(f"[錯誤] 處理檔案 {file_hash} 時發生錯誤: {error_msg}")
-                    if file_hash:
-                        self.manifest_manager.update_status(file_hash, 'validation_error')
                 except pd.errors.ParserError as parse_err: # Pandas 解析錯誤
                     error_msg = f"Pandas 解析錯誤: {parse_err}"
                     print(f"[錯誤] 處理檔案 {file_hash} 時發生錯誤: {error_msg}")
@@ -202,6 +197,11 @@ class TransformationPipeline:
                     if file_hash:
                         # 雖然 parser.py 內部會捕捉這個，但如果它逃逸了，這裡可以捕捉
                         self.manifest_manager.update_status(file_hash, 'parse_error_parser_failed')
+                except (ValueError, TypeError, KeyError) as val_err: # 一般資料處理/驗證錯誤
+                    error_msg = f"資料處理/驗證錯誤: {val_err}"
+                    print(f"[錯誤] 處理檔案 {file_hash} 時發生錯誤: {error_msg}")
+                    if file_hash:
+                        self.manifest_manager.update_status(file_hash, 'validation_error')
                 except Exception as e: # 其他所有未預期錯誤
                     error_msg = f"未預期錯誤: {e}"
                     print(f"[錯誤] 處理檔案 {file_hash} 時發生嚴重錯誤: {error_msg}")
