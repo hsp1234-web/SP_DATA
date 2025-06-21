@@ -1,3 +1,4 @@
+import logging
 import duckdb
 import pathlib
 import pandas as pd
@@ -110,8 +111,10 @@ class TransformationPipeline:
             return []
 
     def run(self):
+        logging.info("Transformation pipeline run method started.")
         try:
             pending_files_data = self.find_pending_files()
+            logging.info(f"Found {len(pending_files_data)} tasks to process.")
 
             if not pending_files_data:
                 print("目前沒有待處理的檔案。")
