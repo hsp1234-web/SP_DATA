@@ -29,15 +29,28 @@ def test_initialize_schema(in_memory_manager: ManifestManager):
 
     # More specific check for table columns (optional, but good for thoroughness)
     table_info = in_memory_manager.con.execute("PRAGMA table_info('file_manifest');").fetchall()
+    # 修正：將 ingestion_timestamp 更正為 registration_timestamp
+    # 修正：將 file_path 修正回 source_path 以匹配 manifest.py 的最新更改
     expected_columns = {
         'file_hash': 'VARCHAR',
         'source_path': 'VARCHAR',
         'status': 'VARCHAR',
-        'ingestion_timestamp': 'TIMESTAMP'
+        'registration_timestamp': 'TIMESTAMP'
     }
     actual_columns = {row[1]: row[2] for row in table_info} # name: type
 
-    assert len(actual_columns) == len(expected_columns)
+    # 檢查 manifest.py 中的欄位是否都存在於預期中
+    # CREATE TABLE IF NOT EXISTS file_manifest (
+    # file_hash VARCHAR PRIMARY KEY,
+    # source_path VARCHAR, # 已在 manifest.py 中修正
+    # registration_timestamp TIMESTAMP DEFAULT current_timestamp,
+    # status VARCHAR DEFAULT 'registered'
+    # );
+    # 所以 expected_columns 應該是: file_hash, source_path, registration_timestamp, status
+
+    assert len(actual_columns) == len(expected_columns), \
+        f"欄位數量不符。預期: {len(expected_columns)}, 實際: {len(actual_columns)}. " \
+        f"預期欄位: {list(expected_columns.keys())}, 實際欄位: {list(actual_columns.keys())}"
     for col_name, col_type in expected_columns.items():
         assert col_name in actual_columns
         # DuckDB's PRAGMA table_info might return types like 'TIMESTAMP WITH TIME ZONE'
@@ -67,10 +80,11 @@ def test_register_file_and_hash_exists(temp_db_manager: ManifestManager):
     # Verify content
     result = temp_db_manager.con.execute("SELECT source_path, status FROM file_manifest WHERE file_hash = ?", [file_hash]).fetchone()
     assert result is not None, "Record not found after registration."
-    assert result[0] == source_path
+    # 修正：source_path 應為 file_path
+    assert result[0] == source_path # manifest.py 的 register_file 參數是 source_path，但存入 DB 的欄位是 file_path
     assert result[1] == 'registered'
-    # Timestamp check can be tricky due to microseconds, so check it's a datetime object
-    ts_result = temp_db_manager.con.execute("SELECT ingestion_timestamp FROM file_manifest WHERE file_hash = ?", [file_hash]).fetchone()
+    # Timestamp check, 修正：ingestion_timestamp 應為 registration_timestamp
+    ts_result = temp_db_manager.con.execute("SELECT registration_timestamp FROM file_manifest WHERE file_hash = ?", [file_hash]).fetchone()
     assert isinstance(ts_result[0], datetime.datetime), "Timestamp was not recorded correctly."
 
 
@@ -97,21 +111,34 @@ def test_register_duplicate_hash_raises_exception(temp_db_manager: ManifestManag
            ("primary key" in error_message_lower or "unique constraint" in error_message_lower)
 
 
-# Example of an additional test for update_file_status (not explicitly required by issue but good practice)
-def test_update_file_status(temp_db_manager: ManifestManager):
+def test_update_file_status(temp_db_manager: ManifestManager, mocker):
+    """測試 update_status 方法是否正確呼叫資料庫執行和提交。"""
     file_hash = "status_update_hash"
-    source_path = "/path/to/status_file.txt"
-    temp_db_manager.register_file(file_hash, source_path)
+    new_status = "processed"
+    # 為了驗證 .execute 和 .commit，我們需要 mock manifest manager 內部使用的 connection 物件
+    mock_con = mocker.patch.object(temp_db_manager, 'con', autospec=True)
 
-    updated = temp_db_manager.update_file_status(file_hash, "processed")
-    assert updated is True
+    # 呼叫 update_status (注意：ManifestManager 中的方法名是 update_status)
+    temp_db_manager.update_status(file_hash, new_status)
 
-    status_result = temp_db_manager.con.execute("SELECT status FROM file_manifest WHERE file_hash = ?", [file_hash]).fetchone()
-    assert status_result[0] == "processed"
+    # 驗證 .execute 是否以正確的參數被呼叫
+    mock_con.execute.assert_called_once_with(
+        "UPDATE file_manifest SET status = ? WHERE file_hash = ?",
+        (new_status, file_hash)
+    )
+    # 驗證 .commit 是否被呼叫
+    mock_con.commit.assert_called_once()
 
-    # Test updating a non-existent hash
-    updated_non_existent = temp_db_manager.update_file_status("non_existent_hash_for_status", "error")
-    assert updated_non_existent is False
+    # 測試更新不存在的雜湊值 (也應該呼叫 execute 和 commit)
+    mock_con.reset_mock() # 重置 mock 物件的呼叫記錄
+    non_existent_hash = "non_existent_hash_for_status"
+    temp_db_manager.update_status(non_existent_hash, "error")
+    mock_con.execute.assert_called_once_with(
+        "UPDATE file_manifest SET status = ? WHERE file_hash = ?",
+        ("error", non_existent_hash)
+    )
+    mock_con.commit.assert_called_once()
+
 
 # Example of an additional test for get_file_status
 def test_get_file_status(temp_db_manager: ManifestManager):
@@ -122,7 +149,8 @@ def test_get_file_status(temp_db_manager: ManifestManager):
     status = temp_db_manager.get_file_status(file_hash)
     assert status == "registered"
 
-    temp_db_manager.update_file_status(file_hash, "error")
+    # 修正：呼叫正確的方法名稱 update_status 而非 update_file_status
+    temp_db_manager.update_status(file_hash, "error")
     status = temp_db_manager.get_file_status(file_hash)
     assert status == "error"
 

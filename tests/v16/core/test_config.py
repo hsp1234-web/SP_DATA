@@ -37,24 +37,36 @@ def malformed_config_file(tmp_path):
         f.write("database: manifest_db_path: data/v16/manifest.db\n  raw_lake_db_path: data/v16/raw_lake.db") # Intentionally malformed
     return config_file_path
 
-def test_load_config_success(project_root):
-    """ 測試從專案根目錄成功載入 config_v16.yaml 設定檔。 """
-    # 假設 config_v16.yaml 位於專案根目錄
-    config_file_path = project_root / "config_v16.yaml"
+def test_load_config_success(mocker):
+    """ 測試成功載入設定檔，使用 mocker 注入虛構的 YAML 內容。 """
+    # 定義虛構的 YAML 內容
+    mock_yaml_content = """
+database:
+  manifest_db_path: "mock/data/v16/manifest.db"
+  raw_lake_db_path: "mock/data/v16/raw_lake.db"
+  processed_db_path: "mock/data/v16/processed_data.db"
+logging:
+  level: "INFO"
+  format: "[%(asctime)s] - %(levelname)s - %(name)s - %(message)s"
+paths:
+  input_directory: "mock/input_files"
+"""
+    # 使用 mocker.patch 來模擬 open 函數
+    mocker.patch('builtins.open', mocker.mock_open(read_data=mock_yaml_content))
 
-    # 在進行斷言之前，可以先檢查檔案是否存在，以便提供更明確的錯誤訊息
-    # 但依照指示，我們直接嘗試載入
-    # assert config_file_path.exists(), f"設定檔案 {config_file_path} 未找到，請確保它位於專案根目錄。"
+    # 呼叫 load_config，此時它會使用我們 mock 的 open
+    # 傳入的路徑字串是什麼在這裡不重要，因為 open 被 mock 了
+    config = load_config("any_dummy_path.yaml")
 
-    config = load_config(str(config_file_path))
-
-    # 這裡的斷言需要根據實際 config_v16.yaml 的內容進行調整
-    # 以下為範例斷言，請根據您的檔案內容修改
+    # 根據 mock_yaml_content 進行斷言
     assert "database" in config, "設定檔中缺少 'database' 區塊"
-    assert "manifest_db_path" in config["database"], "設定檔中缺少 'database.manifest_db_path'"
-    # 例如: assert config["database"]["manifest_db_path"] == "data/v16/manifest.db"
-    # 例如: assert config["logging"]["level"] == "INFO"
-    # 為了使測試通過，我們假設一個通用的鍵存在
+    assert config["database"]["manifest_db_path"] == "mock/data/v16/manifest.db"
+    assert config["database"]["raw_lake_db_path"] == "mock/data/v16/raw_lake.db"
+    assert config["database"]["processed_db_path"] == "mock/data/v16/processed_data.db"
+    assert "logging" in config, "設定檔中缺少 'logging' 區塊"
+    assert config["logging"]["level"] == "INFO"
+    assert "paths" in config, "設定檔中缺少 'paths' 區塊"
+    assert config["paths"]["input_directory"] == "mock/input_files"
     assert config is not None, "設定檔載入失敗，結果為 None"
 
 

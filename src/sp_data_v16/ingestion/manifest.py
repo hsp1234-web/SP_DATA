@@ -21,7 +21,7 @@ class ManifestManager:
         create_table_sql = """
         CREATE TABLE IF NOT EXISTS file_manifest (
             file_hash VARCHAR PRIMARY KEY,
-            file_path VARCHAR,
+            source_path VARCHAR,
             registration_timestamp TIMESTAMP DEFAULT current_timestamp,
             status VARCHAR DEFAULT 'registered'
         );
@@ -56,7 +56,7 @@ class ManifestManager:
         """
         current_timestamp = datetime.datetime.now() # Explicit timestamp for clarity if needed elsewhere
         insert_sql = """
-        INSERT INTO file_manifest (file_hash, file_path, registration_timestamp, status)
+        INSERT INTO file_manifest (file_hash, source_path, registration_timestamp, status)
         VALUES (?, ?, ?, ?);
         """
         # Note: 'status' and 'registration_timestamp' will use DEFAULT if not provided or if NULL is inserted
