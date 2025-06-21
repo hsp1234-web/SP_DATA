@@ -83,3 +83,11 @@ def test_load_malformed_config(malformed_config_file):
     """ Tests that yaml.YAMLError (or a more specific error) is raised for a malformed config file. """
     with pytest.raises(yaml.YAMLError):
         load_config(str(malformed_config_file))
+
+def test_load_config_permission_error(mocker):
+    """測試當開啟設定檔時發生 PermissionError 的情況。"""
+    # 模擬 builtins.open 在被呼叫時拋出 PermissionError
+    mocker.patch('builtins.open', side_effect=PermissionError("Permission denied"))
+
+    with pytest.raises(PermissionError, match="Permission denied"):
+        load_config("any_path.yaml")

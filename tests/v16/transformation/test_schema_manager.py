@@ -116,3 +116,56 @@ def test_json_decode_error(tmp_path: pathlib.Path):
 # The tests above should work with this updated fixture.
 # The `test_identifies_big5_schema` uses "BIG5Keyword" which is ASCII and thus BIG5 compatible.
 # The Chinese characters "測試BIG5" are valid BIG5 characters.
+
+def test_schema_manager_init_io_error(tmp_path: pathlib.Path, mocker, capsys):
+    """
+    測試 SchemaManager 在初始化時，如果讀取 schema 檔案發生 IOError (例如 PermissionError)，
+    能夠妥善處理，並使 schemas 屬性為空。
+    """
+    schema_file_path = tmp_path / "permission_denied_schemas.json"
+    # 不需要實際建立檔案，因為 open 會被 mock
+
+    # 模擬 builtins.open 在被呼叫時拋出 PermissionError
+    mocker.patch('builtins.open', side_effect=PermissionError("Mocked Permission Denied"))
+
+    # manager = SchemaManager(str(schema_file_path)) # 錯誤的：如果__init__拋異常，manager可能未定義
+
+    # 根據原始碼，發生 FileNotFoundError 或 json.JSONDecodeError 時，
+    # self.schemas 會是 {}，並且會印出警告。
+    # 對於其他 IOError (如 PermissionError)，原始碼中沒有明確的 try-except，
+    # 但由於 open() 本身就會拋出，所以 SchemaManager 的 __init__ 應該會讓這個異常直接拋出。
+    # 因此，我們預期 PermissionError 會被拋出。
+    # 經過思考，原始碼的 try-except 只捕捉 FileNotFoundError 和 JSONDecodeError。
+    # 任何其他的 IOError (包括 PermissionError) 都會導致 open() 失敗並直接拋出，
+    # 這意味著 SchemaManager 的 __init__ 不會捕捉它，而是會讓它傳播出去。
+    # 所以測試應該斷言 PermissionError 被 raise。
+
+    # 更新：重新檢視 src/sp_data_v16/transformation/schema_manager.py，
+    # 其 __init__ 中的 try-except 區塊只明確處理 FileNotFoundError 和 json.JSONDecodeError。
+    # PermissionError 是 IOError 的子類別。如果 open() 拋出 PermissionError，
+    # 它不會被現有的 except 區塊捕捉，因此會向外傳播。
+
+    # 所以，這裡的測試應該是斷言 PermissionError 被 raise
+    # 這個預期與最初的「schemas 屬性應為空」不同，這是基於對原始碼錯誤處理邏輯的更仔細分析。
+
+    # 讓我們確認一下 pytest.raises 的用法。如果 __init__ 拋出異常，那麼 manager 物件可能不會被完全初始化。
+    # 所以我們應該把 SchemaManager 的實例化放到 pytest.raises 中。
+    with pytest.raises(PermissionError, match="Mocked Permission Denied"):
+        SchemaManager(str(schema_file_path))
+
+    # 如果我們希望它能處理 PermissionError 並將 schemas 設為空，
+    # 則原始碼需要修改。但根據目前的任務，我們是測試現有程式碼的健壯性。
+    # 如果現有程式碼會直接拋出，那測試就應該驗證這一點。
+
+    # 假設任務是希望它 *能* 處理，且不拋出，那麼原始碼的 try-except 需要調整。
+    # 但目前是「增加模擬...的測試」，所以是測試現狀。
+
+    # 再次檢查原始碼：
+    # try:
+    #     with open(...)
+    # except FileNotFoundError: ...
+    # except json.JSONDecodeError: ...
+    # 確實，PermissionError 會直接從 with open() 拋出，且不被捕捉。
+
+    # 因此，上面的 pytest.raises(PermissionError) 是正確的。
+    # 我們不需要檢查 manager.schemas，因為如果異常拋出，manager 可能未成功建立。

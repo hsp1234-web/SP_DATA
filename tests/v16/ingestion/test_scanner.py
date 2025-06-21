@@ -108,3 +108,53 @@ def test_scan_empty_directory(tmp_path: pathlib.Path):
     empty_dir.mkdir()
     results = list(FileScanner.scan_directory(str(empty_dir)))
     assert len(results) == 0, "Scan of empty directory should yield no results."
+
+def test_scan_directory_io_error_on_one_file(test_files_structure: pathlib.Path, mocker, capsys):
+    """
+    測試當掃描目錄中某個檔案時發生 IOError，程式應能捕捉錯誤、繼續處理，
+    並從結果中排除該錯誤檔案。
+    """
+    # 選擇一個檔案來模擬IOError，例如 file2.dat
+    error_file_name = "file2.dat"
+    error_file_path = test_files_structure / error_file_name
+
+    # 使用 mocker.patch 來模擬 open 函數在遇到特定檔案時拋出 IOError
+    # 我們需要儲存原始的 open
+    original_open = builtins.open
+
+    def mock_open_with_io_error(file, mode='r', *args, **kwargs):
+        if pathlib.Path(file) == error_file_path:
+            raise IOError(f"Mocked IOError for {file}")
+        return original_open(file, mode, *args, **kwargs)
+
+    mocker.patch('builtins.open', mock_open_with_io_error)
+    # tqdm 會影響 capsys 的捕捉，暫時禁用或 mock掉 tqdm
+    mocker.patch('src.sp_data_v16.ingestion.scanner.tqdm', lambda x, **kwargs: x)
+
+
+    results = list(FileScanner.scan_directory(str(test_files_structure)))
+
+    # 預期找到 5 個檔案，但 file2.dat 會因 IOError 而被跳過
+    assert len(results) == 4, "掃描結果應包含4個檔案（排除出錯的檔案）。"
+
+    found_paths_set = {path.name for _, path in results}
+    assert error_file_name not in found_paths_set, f"錯誤檔案 {error_file_name} 不應出現在結果中。"
+
+    expected_remaining_filenames = {"file1.txt", "file3.txt", "empty.txt", "another_file.log"}
+    assert found_paths_set == expected_remaining_filenames, "掃描到的檔案集合不符合預期（已排除錯誤檔案）。"
+
+    # 驗證錯誤訊息是否被印出 (FileScanner 中的 print)
+    captured = capsys.readouterr()
+    assert f"Warning: Could not read or hash file {error_file_path}" in captured.out
+    assert f"Mocked IOError for {error_file_path}" in captured.out
+
+    # 確保其他檔案的雜湊仍然正確（抽查一個）
+    file1_path = test_files_structure / "file1.txt"
+    expected_file1_hash = manual_sha256_hash(file1_path) # Re-calculate hash as original_open is used
+
+    file1_in_results = next((item_hash for item_hash, item_path in results if item_path.name == "file1.txt"), None)
+    assert file1_in_results is not None, "file1.txt 應在結果中"
+    assert file1_in_results == expected_file1_hash, "file1.txt 的雜湊值不正確"
+
+# 需要 import builtins
+import builtins

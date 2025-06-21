@@ -156,3 +156,127 @@ def test_get_file_status(temp_db_manager: ManifestManager):
 
     status_non_existent = temp_db_manager.get_file_status("non_existent_for_get_status")
     assert status_non_existent is None
+
+# --- Database Exception Hardening Tests ---
+
+@pytest.fixture
+def manifest_manager_with_mock_con(mocker):
+    """
+    Fixture to provide a ManifestManager instance where duckdb.connect
+    is patched to return a MagicMock for the connection object.
+    The _initialize_schema is also manually called on this mock connection.
+    """
+    mock_con = mocker.MagicMock(spec=duckdb.DuckDBPyConnection)
+    mocker.patch('duckdb.connect', return_value=mock_con)
+
+    # Instantiate the manager. __init__ will call duckdb.connect (which is patched)
+    # and then _initialize_schema.
+    # We need to ensure _initialize_schema's execute and commit calls don't fail immediately
+    # unless that's the specific test. For a generic mock_con, let them pass.
+    mock_con.execute.return_value = None # Default for execute
+    mock_con.commit.return_value = None # Default for commit
+
+    manager = ManifestManager(db_path="dummy_path_for_mock_con.db")
+
+    # Reset mocks for execute/commit if they were called during init,
+    # so individual tests can assert their specific calls.
+    mock_con.execute.reset_mock()
+    mock_con.commit.reset_mock()
+    return manager, mock_con
+
+def test_init_duckdb_connect_error(mocker):
+    """測試在 ManifestManager 初始化時，如果 duckdb.connect 拋出 duckdb.Error，則該錯誤會被正確拋出。"""
+    mocker.patch('duckdb.connect', side_effect=duckdb.Error("Mocked DB Connection Error"))
+    with pytest.raises(duckdb.Error, match="Mocked DB Connection Error"):
+        ManifestManager(db_path="dummy_path/fail_connect.db")
+
+def test_initialize_schema_db_error(mocker):
+    """測試在 _initialize_schema 中，如果 self.con.execute 拋出 duckdb.Error，該錯誤會被正確處理或拋出。"""
+    # 先讓 duckdb.connect 成功
+    mock_con_instance = mocker.MagicMock()
+    mocker.patch('duckdb.connect', return_value=mock_con_instance)
+
+    # 模擬 self.con.execute 在 _initialize_schema (即 __init__ 過程中) 拋出錯誤
+    mock_con_instance.execute.side_effect = duckdb.Error("Mocked Schema Init Error")
+
+    with pytest.raises(duckdb.Error, match="Mocked Schema Init Error"):
+        ManifestManager(db_path=":memory:")
+
+    # 驗證 execute 至少被呼叫一次（嘗試執行 CREATE TABLE）
+    mock_con_instance.execute.assert_called_once() # This refers to the execute during _initialize_schema
+
+def test_hash_exists_db_error(manifest_manager_with_mock_con, mocker):
+    """測試在 hash_exists 中，如果 self.con.execute 拋出 duckdb.Error，則錯誤會被正確拋出。"""
+    manager, mock_con = manifest_manager_with_mock_con
+    mock_con.execute.side_effect = duckdb.Error("Mocked DB Error on execute for hash_exists")
+    with pytest.raises(duckdb.Error, match="Mocked DB Error on execute for hash_exists"):
+        manager.hash_exists("any_hash")
+    mock_con.execute.assert_called_once()
+
+def test_get_file_status_db_error(manifest_manager_with_mock_con, mocker):
+    """測試在 get_file_status 中，如果 self.con.execute 拋出 duckdb.Error，則錯誤會被正確拋出。"""
+    manager, mock_con = manifest_manager_with_mock_con
+    mock_con.execute.side_effect = duckdb.Error("Mocked DB Error on execute for get_file_status")
+    with pytest.raises(duckdb.Error, match="Mocked DB Error on execute for get_file_status"):
+        manager.get_file_status("any_hash")
+    mock_con.execute.assert_called_once()
+
+def test_register_file_db_execute_error(manifest_manager_with_mock_con, mocker):
+    """測試在 register_file 中，如果第一次 self.con.execute (INSERT) 拋出 duckdb.Error，則錯誤會被正確拋出。"""
+    manager, mock_con = manifest_manager_with_mock_con
+    mock_con.execute.side_effect = duckdb.Error("Mocked DB Error on execute for register_file")
+    with pytest.raises(duckdb.Error, match="Mocked DB Error on execute for register_file"):
+        manager.register_file("test_hash", "/path/to/file")
+    mock_con.execute.assert_called_once()
+    mock_con.commit.assert_not_called() # 驗證 commit 不會被呼叫
+
+def test_register_file_db_commit_error(manifest_manager_with_mock_con, mocker):
+    """測試在 register_file 中，如果 self.con.commit 拋出 duckdb.Error，則錯誤會被正確拋出。"""
+    manager, mock_con = manifest_manager_with_mock_con
+    # execute 成功，commit 失敗
+    mock_con.execute.return_value = None # 確保 execute 不拋錯
+    mock_con.commit.side_effect = duckdb.Error("Mocked DB Error on commit for register_file")
+
+    with pytest.raises(duckdb.Error, match="Mocked DB Error on commit for register_file"):
+        manager.register_file("test_hash", "/path/to/file")
+
+    mock_con.execute.assert_called_once()
+    mock_con.commit.assert_called_once()
+
+def test_update_status_db_execute_error(manifest_manager_with_mock_con, mocker):
+    """測試在 update_status 中，如果 self.con.execute 拋出 duckdb.Error，則該錯誤會被印出且不向外拋出（根據目前實作）。"""
+    manager, mock_con = manifest_manager_with_mock_con
+    mock_con.execute.side_effect = duckdb.Error("Mocked DB Error on execute for update")
+    mocker.patch('builtins.print') # Mock print to check its call
+
+    manager.update_status("any_hash", "new_status")
+
+    builtins.print.assert_called_once_with(f"Error updating status for any_hash to new_status: Mocked DB Error on execute for update")
+    mock_con.execute.assert_called_once()
+    mock_con.commit.assert_not_called()
+
+def test_update_status_db_commit_error(manifest_manager_with_mock_con, mocker):
+    """測試在 update_status 中，如果 self.con.commit 拋出 duckdb.Error，則該錯誤會被印出且不向外拋出（根據目前實作）。"""
+    manager, mock_con = manifest_manager_with_mock_con
+    mock_con.execute.return_value = None # execute 成功
+    mock_con.commit.side_effect = duckdb.Error("Mocked DB Error on commit for update")
+    mocker.patch('builtins.print')
+
+    manager.update_status("any_hash", "new_status")
+
+    mock_con.execute.assert_called_once()
+    mock_con.commit.assert_called_once()
+    builtins.print.assert_called_once_with(f"Error updating status for any_hash to new_status: Mocked DB Error on commit for update")
+
+def test_close_db_error(manifest_manager_with_mock_con, mocker):
+    """測試在 close 中，如果 self.con.close 拋出 duckdb.Error，錯誤應該被正確拋出。"""
+    manager, mock_con = manifest_manager_with_mock_con
+    mock_con.close.side_effect = duckdb.Error("Mocked DB Error on close")
+
+    with pytest.raises(duckdb.Error, match="Mocked DB Error on close"):
+        manager.close()
+
+    mock_con.close.assert_called_once()
+
+# 需要 import builtins 來 mock print
+import builtins

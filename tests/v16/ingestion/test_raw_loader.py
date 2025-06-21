@@ -57,6 +57,108 @@ def test_close_success(raw_loader_instance, mock_duckdb_connection):
 
 def test_init_db_connection_error(mocker):
     """測試資料庫連線失敗時，__init__ 是否會引發例外。"""
-    mocker.patch('duckdb.connect', side_effect=Exception("DB Connection Error"))
-    with pytest.raises(Exception, match="DB Connection Error"):
+    # 這裡的 mocker.patch('duckdb.connect', side_effect=Exception("DB Connection Error"))
+    # 會被 raw_loader.py 中的 except Exception as e: print(...) 捕捉並重新 raise
+    # 為了精確測試 duckdb.Error，我們明確指定 side_effect 為 duckdb.Error
+    mocker.patch('duckdb.connect', side_effect=duckdb.Error("Mocked DB Connection Error"))
+    with pytest.raises(duckdb.Error, match="Mocked DB Connection Error"):
         RawLakeLoader(db_path="dummy_path/test_raw_lake.db")
+
+# --- IO/Database Exception Hardening Tests ---
+
+@pytest.fixture
+def raw_loader_with_mock_con(mocker):
+    """
+    Fixture to provide a RawLakeLoader instance where duckdb.connect
+    is patched to return a MagicMock for the connection object.
+    """
+    mock_con = mocker.MagicMock(spec=duckdb.DuckDBPyConnection)
+    mocker.patch('duckdb.connect', return_value=mock_con)
+
+    # Mock pathlib.Path methods used by the loader for general cases
+    # Individual tests can override these if needed
+    mocker.patch('pathlib.Path.read_bytes', return_value=b"default mock data")
+
+    # Instantiate the loader. __init__ will call _initialize_schema.
+    # Let _initialize_schema's execute pass by default for this fixture.
+    mock_con.execute.return_value = None
+
+    loader = RawLakeLoader(db_path="dummy_path/mock_con_raw_lake.db")
+
+    # Reset mocks for execute/commit if they were called during init
+    mock_con.execute.reset_mock()
+    mock_con.commit.reset_mock()
+    return loader, mock_con
+
+def test_init_initialize_schema_db_error(mocker):
+    """測試在 RawLakeLoader 初始化時，如果 _initialize_schema 中的 execute 失敗，錯誤會被傳播。"""
+    mock_con_instance = mocker.MagicMock(spec=duckdb.DuckDBPyConnection)
+    mocker.patch('duckdb.connect', return_value=mock_con_instance)
+    mock_con_instance.execute.side_effect = duckdb.Error("Schema init DB error")
+
+    with pytest.raises(duckdb.Error, match="Schema init DB error"):
+        RawLakeLoader(db_path="dummy_db_path.db")
+    mock_con_instance.execute.assert_called_once() # Verifies _initialize_schema was attempted
+
+def test_save_file_read_bytes_io_error(raw_loader_with_mock_con, mocker):
+    """測試在 save_file 中，如果 file_path.read_bytes() 拋出 IOError，則該錯誤會被正確拋出。"""
+    loader, mock_con = raw_loader_with_mock_con
+
+    mock_file_path = MagicMock(spec=pathlib.Path)
+    mock_file_path.read_bytes.side_effect = IOError("Mocked Read Bytes IOError")
+    file_hash = "test_hash_io_error"
+
+    with pytest.raises(IOError, match="Mocked Read Bytes IOError"):
+        loader.save_file(mock_file_path, file_hash)
+
+    mock_file_path.read_bytes.assert_called_once()
+    mock_con.execute.assert_not_called() # execute 不應被呼叫
+    mock_con.commit.assert_not_called() # commit 不應被呼叫
+
+def test_save_file_db_execute_error(raw_loader_with_mock_con, mocker):
+    """測試在 save_file 中，如果 self.con.execute 拋出 duckdb.Error，則該錯誤會被正確拋出。"""
+    loader, mock_con = raw_loader_with_mock_con
+
+    mock_file_path = MagicMock(spec=pathlib.Path)
+    mock_file_path.read_bytes.return_value = b"some data" # read_bytes 成功
+    file_hash = "test_hash_db_execute_error"
+
+    mock_con.execute.side_effect = duckdb.Error("Mocked DB Execute Error for save_file")
+
+    with pytest.raises(duckdb.Error, match="Mocked DB Execute Error for save_file"):
+        loader.save_file(mock_file_path, file_hash)
+
+    mock_file_path.read_bytes.assert_called_once()
+    mock_con.execute.assert_called_once()
+    mock_con.commit.assert_not_called() # commit 不應被呼叫
+
+def test_save_file_db_commit_error(raw_loader_with_mock_con, mocker):
+    """測試在 save_file 中，如果 self.con.commit 拋出 duckdb.Error，則該錯誤會被正確拋出。"""
+    loader, mock_con = raw_loader_with_mock_con
+
+    mock_file_path = MagicMock(spec=pathlib.Path)
+    mock_file_path.read_bytes.return_value = b"some data" # read_bytes 成功
+    file_hash = "test_hash_db_commit_error"
+
+    mock_con.execute.return_value = None # execute 成功
+    mock_con.commit.side_effect = duckdb.Error("Mocked DB Commit Error for save_file")
+
+    with pytest.raises(duckdb.Error, match="Mocked DB Commit Error for save_file"):
+        loader.save_file(mock_file_path, file_hash)
+
+    mock_file_path.read_bytes.assert_called_once()
+    mock_con.execute.assert_called_once()
+    mock_con.commit.assert_called_once()
+
+def test_close_db_error(raw_loader_with_mock_con, mocker):
+    """測試在 close 中，如果 self.con.close 拋出 duckdb.Error，錯誤會被正確拋出。"""
+    loader, mock_con = raw_loader_with_mock_con
+    mock_con.close.side_effect = duckdb.Error("Mocked DB Error on close")
+
+    with pytest.raises(duckdb.Error, match="Mocked DB Error on close"):
+        loader.close()
+
+    mock_con.close.assert_called_once()
+
+# 需要 duckdb 來指定 Error 類型
+import duckdb

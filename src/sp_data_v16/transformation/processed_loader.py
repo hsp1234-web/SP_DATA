@@ -35,6 +35,7 @@ class ProcessedDBLoader:
             print(f"Error creating directory for DuckDB database '{self.db_path}': {e}")
             raise
 
+    # TODO: [健壯性] 此函式的錯誤處理機制需要重構，以更好地隔離異常。特別是在 append 模式下 to_sql 失敗時，except 區塊不應引用可能未定義的 temp_view_name。
     def load_dataframe(self, dataframe: pd.DataFrame, table_name: str, schema_definition: dict):
         """
         將 pandas DataFrame 載入到 DuckDB 資料庫的指定資料表中，使用「寫入或更新 (Upsert)」邏輯。
