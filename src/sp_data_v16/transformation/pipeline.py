@@ -166,11 +166,19 @@ class TransformationPipeline:
                     # 4. Validate Data
                     validated_df = self.validator.validate(dataframe, schema_definition)
                     # validator.py 內部會印出詳細錯誤並回傳 None
-                    if validated_df is None or (dataframe.shape[0] > 0 and validated_df.empty):
-                        print(f"[進度] 資料驗證失敗 {file_path} (Hash: {file_hash[:8]})")
-                        # validator.py 內部已經 print 詳細錯誤
+
+                    # 核心 Bug 修復：檢查 validated_df 是否為 None 或 empty
+                    if validated_df is None or validated_df.empty:
+                        # 雖然原始程式碼多處使用 print，但此處關鍵日誌應使用 logging
+                        logging.warning(f"檔案 {file_path} (Hash: {file_hash[:8]}) 因數據驗證失敗或無有效數據，已中止後續載入流程。")
+                        # validator.py 內部已經 print 詳細錯誤，這裡的 print 主要是流程提示
+                        print(f"[進度] 資料驗證失敗或無有效數據 {file_path} (Hash: {file_hash[:8]})")
                         self.manifest_manager.update_status(file_hash, 'validation_error')
                         continue # 處理下一個檔案
+
+                    # 原有的檢查條件 (dataframe.shape[0] > 0 and validated_df.empty) 其實已經被 validated_df.empty 涵蓋
+                    # 如果 validated_df.empty 為 True，那麼 validated_df 就是空的，無論原始 dataframe 是否有數據。
+                    # 如果 validated_df 不是 None 且不是 empty，才代表驗證成功且有數據。
                     print(f"[進度] 成功驗證 DataFrame for {file_path}")
 
                     # print("Validated DataFrame head:")
