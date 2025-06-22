@@ -76,13 +76,18 @@ class DataParser:
 
             return df
 
-        except UnicodeDecodeError:
-            print(f"Error: Could not decode raw_content using encoding '{encoding}'.")
-            return None
-        except pd.errors.ParserError as e:
-            print(f"Error: Failed to parse CSV content. Pandas ParserError: {e}")
-            return None
+        except UnicodeDecodeError as ude:
+            print(f"Error: Could not decode raw_content using encoding '{encoding}'. Original error: {ude}")
+            raise # Re-raise the exception to be handled by the pipeline
+        except pd.errors.ParserError as pe:
+            print(f"Error: Failed to parse CSV content. Pandas ParserError: {pe}")
+            raise # Re-raise the exception to be handled by the pipeline
         except Exception as e:
+            # For other unexpected errors during parsing, still print and return None,
+            # or decide if these should also be re-raised.
+            # For now, keeping the original behavior for truly unexpected 'Exception'.
+            # If ValueErrors from within pandas operations (not ParserError itself) are an issue,
+            # they might be caught here or by the pipeline's ValueError handler.
             print(f"Error: An unexpected error occurred during parsing: {e}")
             return None
 

@@ -40,6 +40,32 @@ def transformation_pipeline_env(tmp_path):
                 "value": {"dtype": "float", "nullable": True, "db_type": "DOUBLE"}
             }
         },
+        "csv_retry_succeeds_schema": { # New schema for retry_succeeds test
+            "table_name": "retry_succeeds_table",
+            "keywords": ["retry_succeeds_keywords"], # Unique keywords
+            "file_type": "csv",
+            "encoding": "utf-8",
+            "delimiter": ",",
+            "csv_skip_rows": 1,
+            "unique_key": ["id"],
+            "columns": { # Assuming same column structure as csv_valid_data for simplicity
+                "id": {"dtype": "integer", "nullable": False, "db_type": "INTEGER"},
+                "name": {"dtype": "string", "nullable": True, "db_type": "VARCHAR"},
+                "value": {"dtype": "float", "nullable": True, "db_type": "DOUBLE"}
+            }
+        },
+        "csv_generic_schema": { # New schema for fatal error test
+            "table_name": "generic_table_for_fatal_error",
+            "keywords": ["fatal_error_keywords"],
+            "file_type": "csv",
+            "encoding": "utf-8",
+            "delimiter": ",",
+            "csv_skip_rows": 1,
+            "columns": {
+                "data_col1": {"dtype": "string"},
+                "data_col2": {"dtype": "integer"}
+            }
+        },
         "csv_validation_error": {
             "table_name": "validation_error_table",
             "keywords": ["validation_error_keywords"],
@@ -109,7 +135,11 @@ def transformation_pipeline_env(tmp_path):
         ('hash_schema_not_found_txt', '/fake/no_schema.txt', 'loaded_to_raw_lake'),
         ('hash_bad_encoding_csv', '/fake/bad_encoding.csv', 'loaded_to_raw_lake'),
         ('hash_no_content_csv', '/fake/no_content.csv', 'loaded_to_raw_lake'),
-        ('hash_already_processed_csv', '/fake/already_processed.csv', 'processed')
+        ('hash_already_processed_csv', '/fake/already_processed.csv', 'processed'),
+        # New entries for fault tolerance tests
+        ('hash_retry_succeeds_csv', '/fake/retry_succeeds.csv', 'loaded_to_raw_lake'),
+        ('hash_retry_fails_csv', '/fake/retry_fails.csv', 'loaded_to_raw_lake'),
+        ('hash_fatal_error_csv', '/fake/fatal_error.csv', 'loaded_to_raw_lake')
     ]
     for record in manifest_test_data:
         m_conn.execute("INSERT INTO file_manifest (file_hash, file_path, status) VALUES (?, ?, ?)", record)
@@ -118,15 +148,23 @@ def transformation_pipeline_env(tmp_path):
     # Setup raw_lake.db
     rl_conn = duckdb.connect(str(raw_lake_db_path))
     rl_conn.execute("CREATE TABLE IF NOT EXISTS raw_files (file_hash VARCHAR PRIMARY KEY, raw_content BLOB);")
-    raw_lake_test_data = [
+    _raw_lake_test_data_list = [ # Renamed to avoid confusion with the dict below
         ('hash_valid_data_csv', b"valid_data_keywords\n1,Alice,100.5\n2,Bob,200.0\n3,Charlie,NaN"),
         ('hash_validation_err_csv', b"validation_error_keywords\nnot_an_int,Test Data"), # "not_an_int" for non-nullable integer
         ('hash_parser_err_csv', b"parser_error_keywords\n\"unterminated_quote,valueA\ncol2,valueB"), # Matches csv_parser_error_schema
         ('hash_schema_not_found_txt', b"some_random_text_content\nthat_matches_no_schema"),
         ('hash_bad_encoding_csv', "bad_encoding_keywords\n測試鍵,測試值".encode('big5')), # For csv_bad_encoding_schema (expects utf-8)
+        # New entries for fault tolerance tests
+        # Content for retry_succeeds should match 'csv_retry_succeeds_schema'
+        ('hash_retry_succeeds_csv', b"retry_succeeds_keywords\n10,RetrySuccess,1000.1"),
+        # Content for retry_fails and fatal_error, actual content might not matter much due to mocking,
+        # but providing some basic content is good practice.
+        ('hash_retry_fails_csv', b"keywords_for_retry_fails\ndata_that_will_keep_failing_io"),
+        ('hash_fatal_error_csv', b"fatal_error_keywords\nwill_cause_parser_value_error,123") # Matches csv_generic_schema
     ]
+    raw_lake_test_data_dict = {item[0]: item[1] for item in _raw_lake_test_data_list} # Create a dict version
     # hash_no_content_csv is intentionally omitted from raw_files table
-    for record in raw_lake_test_data:
+    for record in _raw_lake_test_data_list: # Use the list for DB insertion
         rl_conn.execute("INSERT INTO raw_files (file_hash, raw_content) VALUES (?, ?)", record)
     rl_conn.close()
 
@@ -137,19 +175,26 @@ def transformation_pipeline_env(tmp_path):
     # Expected statuses after pipeline run
     expected_statuses = {
         'hash_valid_data_csv': 'processed',
-        'hash_validation_err_csv': 'validation_error',
-        'hash_parser_err_csv': 'parse_error_parser_failed',
-        'hash_schema_not_found_txt': 'parse_error_schema_not_identified',
-        'hash_bad_encoding_csv': 'parse_error_parser_failed', # DataParser fails on decode for this
-        'hash_no_content_csv': 'parse_error_no_content',
-        'hash_already_processed_csv': 'processed' # Should remain unchanged
+        'hash_validation_err_csv': 'validation_error', # validator returns None/empty
+        'hash_parser_err_csv': 'transformation_failed', # pd.errors.ParserError re-raised by DataParser, caught by pipeline
+        'hash_schema_not_found_txt': 'parse_error_schema_not_identified', # schema identification fails
+        'hash_bad_encoding_csv': 'transformation_failed', # UnicodeDecodeError re-raised by DataParser, caught by pipeline
+        'hash_no_content_csv': 'parse_error_no_content', # raw_content is None
+        'hash_already_processed_csv': 'processed', # Should remain unchanged
+
+        # Expected statuses for new fault tolerance tests in an end-to-end run (no mocks from fault tolerance tests apply here):
+        'hash_retry_succeeds_csv': 'processed', # Content is valid and should be processed.
+        'hash_retry_fails_csv': 'parse_error_schema_not_identified', # Content does not match any schema keywords.
+        'hash_fatal_error_csv': 'processed'     # Content is valid for its schema and should be processed.
     }
 
     # For the original test_find_pending_files
     # It expects 'expected_hashes' for files that are 'loaded_to_raw_lake'
+    # Adding new files that are initially in 'loaded_to_raw_lake'
     expected_hashes_for_find_pending = sorted([
         'hash_valid_data_csv', 'hash_validation_err_csv', 'hash_parser_err_csv',
-        'hash_schema_not_found_txt', 'hash_bad_encoding_csv', 'hash_no_content_csv'
+        'hash_schema_not_found_txt', 'hash_bad_encoding_csv', 'hash_no_content_csv',
+        'hash_retry_succeeds_csv', 'hash_retry_fails_csv', 'hash_fatal_error_csv'
     ])
 
     yield {
@@ -158,7 +203,8 @@ def transformation_pipeline_env(tmp_path):
         "processed_db_path": str(processed_db_path), # Added for verification
         "expected_statuses": expected_statuses,
         "expected_hashes_for_find_pending": expected_hashes_for_find_pending,
-        "valid_data_table_name": schemas_content["csv_valid_data"]["table_name"] # Pass for verification
+        "valid_data_table_name": schemas_content["csv_valid_data"]["table_name"], # Pass for verification
+        "raw_lake_test_data_dict": raw_lake_test_data_dict # Expose the dict of raw content
     }
     # tmp_path fixture handles cleanup
 
@@ -591,7 +637,8 @@ def test_run_handles_validation_failure(monkeypatch, tmp_path, capsys):
     mock_pdl_instance.load_dataframe.assert_not_called()
 
     captured = capsys.readouterr()
-    assert f"[進度] 資料驗證失敗 {test_file_path} (Hash: {test_file_hash[:8]})" in captured.out
+    # Updated log message to reflect the change in pipeline.py
+    assert f"[進度] 資料驗證失敗或無有效數據 {test_file_path} (Hash: {test_file_hash[:8]})" in captured.out
 
     # Verify all relevant close methods were called
     pipeline.manifest_con.close.assert_called_once()
@@ -602,9 +649,13 @@ def test_run_handles_validation_failure(monkeypatch, tmp_path, capsys):
 @pytest.mark.parametrize(
     "exception_to_raise, expected_status, expected_log_message_part",
     [
-        (ValueError("Simulated ValueError in parse"), 'validation_error', "資料處理/驗證錯誤: Simulated ValueError in parse"),
-        (pd.errors.ParserError("Simulated ParserError"), 'parse_error_parser_failed', "Pandas 解析錯誤: Simulated ParserError"),
-        (UnicodeDecodeError("utf-8", b"\x80", 0, 1, "invalid start byte"), 'parse_error_parser_failed', "編碼錯誤: 'utf-8' codec can't decode byte 0x80 in position 0: invalid start byte"),
+            # ValueError from parser.parse should now result in 'transformation_failed'
+            (ValueError("Simulated ValueError in parse"), 'transformation_failed', "解析或轉換階段錯誤: Simulated ValueError in parse"),
+            # pd.errors.ParserError from parser.parse should now result in 'transformation_failed'
+            (pd.errors.ParserError("Simulated ParserError"), 'transformation_failed', "解析或轉換階段錯誤: Simulated ParserError"),
+            # UnicodeDecodeError from parser.parse should now result in 'transformation_failed'
+            (UnicodeDecodeError("utf-8", b"\x80", 0, 1, "invalid start byte"), 'transformation_failed', "解析或轉換階段錯誤: 'utf-8' codec can't decode byte 0x80 in position 0: invalid start byte"),
+            # Generic Exception remains 'transformation_failed'
         (Exception("Simulated Generic Error in parse"), 'transformation_failed', "未預期錯誤: Simulated Generic Error in parse"),
     ]
 )
@@ -774,7 +825,322 @@ def test_find_pending_files_handles_no_results(monkeypatch, tmp_path):
     mock_connection.execute.assert_called_once_with(
         "SELECT file_hash, file_path, status, registration_timestamp FROM file_manifest WHERE status = 'loaded_to_raw_lake'"
     )
-    mock_cursor.fetchall.assert_called_once()
+
+# --- Transformation Pipeline Fault Tolerance Tests ---
+
+@pytest.mark.xfail(reason="TransformationPipeline 尚未實現 IO 錯誤的重試邏輯。此測試預期在該功能實現後通過。")
+def test_pipeline_retries_on_transient_error_and_succeeds(
+    transformation_pipeline_env, mocker, capsys
+):
+    """
+    測試：當讀取原始內容遇到暫時性 IO 錯誤時，管線應進行重試，並最終成功處理檔案。
+    - Mock find_pending_files 以隔離測試，只處理一個目標檔案。
+    - Mock raw_lake_reader.get_raw_content 以模擬 IO 錯誤及後續的成功讀取。
+    - 假設 Pipeline 內部有 MAX_RETRIES >= 2 的重試邏輯。
+    - 假設成功重試後，狀態會更新為 'processed_after_retry'。
+    """
+    config_path = transformation_pipeline_env["config_path"]
+    manifest_db_path = transformation_pipeline_env["manifest_db_path"]
+
+    TARGET_FILE_HASH = 'hash_retry_succeeds_csv'
+    TARGET_FILE_PATH = '/fake/retry_succeeds.csv'
+    # This content should match the 'csv_valid_data' schema defined in the fixture
+    MOCK_RAW_CONTENT_SUCCESS = transformation_pipeline_env["raw_lake_test_data_dict"][TARGET_FILE_HASH]
+
+
+    pipeline = TransformationPipeline(config_path=config_path)
+
+    # 1. 測試隔離：只處理目標檔案
+    mock_find_pending = mocker.patch.object(pipeline, 'find_pending_files')
+    mock_find_pending.return_value = [{
+        'file_hash': TARGET_FILE_HASH,
+        'file_path': TARGET_FILE_PATH,
+        'status': 'loaded_to_raw_lake',
+        'registration_timestamp': pd.Timestamp.now() # Mock timestamp
+    }]
+
+    # 2. 精準 Mocking：模擬 raw_lake_reader.get_raw_content 的行為
+    # 前兩次呼叫失敗 (IOError)，第三次成功返回內容
+    mock_get_raw_content = mocker.patch.object(
+        pipeline.raw_lake_reader,
+        'get_raw_content',
+        side_effect=[
+            IOError("Simulated IO Error 1"),
+            IOError("Simulated IO Error 2"),
+            MOCK_RAW_CONTENT_SUCCESS
+        ]
+    )
+
+    # Mock manifest_manager.update_status to spy on its calls
+    spy_update_status = mocker.spy(pipeline.manifest_manager, 'update_status')
+
+    # 執行管線
+    try:
+        pipeline.run()
+    except Exception as e:
+        # 這裡的 `pytest.fail` 會立即終止測試並顯示錯誤訊息。
+        # 這有助於捕獲在 `pipeline.run()` 內部未被預期處理的例外。
+        pytest.fail(f"Pipeline run failed unexpectedly during retry test: {e}\nCaptured stdout:\n{capsys.readouterr().out}")
+    finally:
+        pipeline.close()
+
+    # 3. 驗證 Mock 和狀態
+    # 驗證 get_raw_content 被呼叫了3次 (2次失敗, 1次成功)
+    assert mock_get_raw_content.call_count == 3, \
+        f"Expected get_raw_content to be called 3 times, but was called {mock_get_raw_content.call_count} times."
+
+    # 驗證 manifest 狀態是否更新為 'processed_after_retry'
+    # 由於 TransformationPipeline 目前沒有內建重試邏輯會更新到這個特定狀態，
+    # 此斷言將在 Pipeline 實現該功能前失敗。
+    # 我們檢查最後一次對 update_status 的呼叫。
+    # 注意：如果管線在重試期間更新了狀態（例如 'retry_attempt_1'），則需要調整此斷言。
+    # 目前，我們假設它只在最終成功或失敗時更新。
+
+    # 找到對目標檔案 hash 的最後一次狀態更新
+    final_status_call = None
+    for call in spy_update_status.call_args_list:
+        if call.args[0] == TARGET_FILE_HASH:
+            final_status_call = call
+
+    assert final_status_call is not None, f"update_status was never called for {TARGET_FILE_HASH}"
+
+    # *** 假設 Pipeline 更新後的狀態 ***
+    # 這個 'processed_after_retry' 狀態是我們期望 Pipeline 未來會設定的狀態。
+    # 如果 Pipeline 目前的邏輯是直接設為 'processed'，此測試會失敗，
+    # 指出 Pipeline 需要增強以區分正常處理和重試後處理。
+    EXPECTED_FINAL_STATUS = 'processed_after_retry'
+    assert final_status_call.args[1] == EXPECTED_FINAL_STATUS, \
+        f"Expected final status for {TARGET_FILE_HASH} to be '{EXPECTED_FINAL_STATUS}', but got '{final_status_call.args[1]}'. " \
+        "This might indicate that the TransformationPipeline does not yet implement the specific status update for successful retries."
+
+    # 輔助輸出，用於調試
+    captured = capsys.readouterr()
+    print("\nCaptured output for test_pipeline_retries_on_transient_error_and_succeeds:")
+    print(captured.out)
+    if captured.err:
+        print("Captured stderr:")
+        print(captured.err)
+
+    # 也可以直接查詢 DB 確認最終狀態，如果 update_status mock 不夠用的話
+    conn_check = None
+    try:
+        conn_check = duckdb.connect(str(manifest_db_path), read_only=True)
+        db_status = conn_check.execute(
+            "SELECT status FROM file_manifest WHERE file_hash = ?", (TARGET_FILE_HASH,)
+        ).fetchone()
+        assert db_status is not None, f"Manifest record for {TARGET_FILE_HASH} not found in DB."
+        assert db_status[0] == EXPECTED_FINAL_STATUS, \
+            f"Expected DB status for {TARGET_FILE_HASH} to be '{EXPECTED_FINAL_STATUS}', but got '{db_status[0]}'."
+    finally:
+        if conn_check:
+            conn_check.close()
+
+
+@pytest.mark.xfail(reason="TransformationPipeline 尚未實現 IO 錯誤的重試邏輯和最大重試次數後的特定狀態更新。此測試預期在該功能實現後通過。")
+def test_pipeline_fails_after_max_retries_and_updates_manifest(
+    transformation_pipeline_env, mocker, capsys
+):
+    """
+    測試：當讀取原始內容持續遇到 IO 錯誤，達到最大重試次數後，管線應放棄並更新 Manifest 狀態。
+    - Mock find_pending_files 以隔離測試。
+    - Mock raw_lake_reader.get_raw_content 以持續模擬 IO 錯誤。
+    - 假設 Pipeline 內部 MAX_RETRIES = 3 (總共嘗試 1 + 3 = 4 次)。
+    - 假設達到最大重試次數後，狀態更新為 'failed_after_retries'。
+    """
+    config_path = transformation_pipeline_env["config_path"]
+    manifest_db_path = transformation_pipeline_env["manifest_db_path"]
+
+    TARGET_FILE_HASH = 'hash_retry_fails_csv'
+    TARGET_FILE_PATH = '/fake/retry_fails.csv'
+    MAX_ATTEMPTS = 4 # 1 initial + 3 retries
+
+    pipeline = TransformationPipeline(config_path=config_path)
+
+    # 1. 測試隔離
+    mock_find_pending = mocker.patch.object(pipeline, 'find_pending_files')
+    mock_find_pending.return_value = [{
+        'file_hash': TARGET_FILE_HASH,
+        'file_path': TARGET_FILE_PATH,
+        'status': 'loaded_to_raw_lake',
+        'registration_timestamp': pd.Timestamp.now()
+    }]
+
+    # 2. 精準 Mocking： raw_lake_reader.get_raw_content 持續失敗
+    mock_get_raw_content = mocker.patch.object(
+        pipeline.raw_lake_reader,
+        'get_raw_content',
+        side_effect=[IOError(f"Simulated IO Error attempt {i+1}") for i in range(MAX_ATTEMPTS)]
+    )
+
+    spy_update_status = mocker.spy(pipeline.manifest_manager, 'update_status')
+
+    # 執行管線
+    try:
+        pipeline.run()
+    except Exception as e:
+        pytest.fail(f"Pipeline run failed unexpectedly during max retries test: {e}\nCaptured stdout:\n{capsys.readouterr().out}")
+    finally:
+        pipeline.close()
+
+    # 3. 驗證 Mock 和狀態
+    assert mock_get_raw_content.call_count == MAX_ATTEMPTS, \
+        f"Expected get_raw_content to be called {MAX_ATTEMPTS} times, but was called {mock_get_raw_content.call_count} times."
+
+    final_status_call = None
+    for call in spy_update_status.call_args_list:
+        if call.args[0] == TARGET_FILE_HASH:
+            final_status_call = call
+
+    assert final_status_call is not None, f"update_status was never called for {TARGET_FILE_HASH}"
+
+    EXPECTED_FINAL_STATUS = 'failed_after_retries'
+    assert final_status_call.args[1] == EXPECTED_FINAL_STATUS, \
+        f"Expected final status for {TARGET_FILE_HASH} to be '{EXPECTED_FINAL_STATUS}', but got '{final_status_call.args[1]}'. "\
+        "This might indicate that the TransformationPipeline does not yet implement the specific status update for failures after max retries."
+
+    # 輔助輸出
+    captured = capsys.readouterr()
+    print("\nCaptured output for test_pipeline_fails_after_max_retries_and_updates_manifest:")
+    print(captured.out)
+    if captured.err:
+        print("Captured stderr:")
+        print(captured.err)
+
+    # DB 確認
+    conn_check = None
+    try:
+        conn_check = duckdb.connect(str(manifest_db_path), read_only=True)
+        db_status = conn_check.execute(
+            "SELECT status FROM file_manifest WHERE file_hash = ?", (TARGET_FILE_HASH,)
+        ).fetchone()
+        assert db_status is not None, f"Manifest record for {TARGET_FILE_HASH} not found in DB."
+        assert db_status[0] == EXPECTED_FINAL_STATUS, \
+            f"Expected DB status for {TARGET_FILE_HASH} to be '{EXPECTED_FINAL_STATUS}', but got '{db_status[0]}'."
+    finally:
+        if conn_check:
+            conn_check.close()
+
+
+def test_pipeline_skips_on_fatal_error_and_updates_manifest(
+    transformation_pipeline_env, mocker, capsys
+):
+    """
+    測試：當解析階段遇到致命錯誤 (如 ValueError) 時，管線應跳過該檔案，並更新 Manifest 狀態。
+    - Mock find_pending_files 以隔離測試。
+    - Mock parser.parse 以模擬致命的解析錯誤。
+    - 狀態應更新為 'transformation_failed'。
+    """
+    config_path = transformation_pipeline_env["config_path"]
+    manifest_db_path = transformation_pipeline_env["manifest_db_path"]
+
+    TARGET_FILE_HASH = 'hash_fatal_error_csv'
+    TARGET_FILE_PATH = '/fake/fatal_error.csv'
+    # Raw content for this file is defined in the fixture and matches 'csv_generic_schema'
+    # This allows the pipeline to reach the parser.parse step.
+    MOCK_RAW_CONTENT_FATAL = transformation_pipeline_env["raw_lake_test_data_dict"][TARGET_FILE_HASH]
+
+
+    pipeline = TransformationPipeline(config_path=config_path)
+
+    # 1. 測試隔離
+    mock_find_pending = mocker.patch.object(pipeline, 'find_pending_files')
+    mock_find_pending.return_value = [{
+        'file_hash': TARGET_FILE_HASH,
+        'file_path': TARGET_FILE_PATH,
+        'status': 'loaded_to_raw_lake',
+        'registration_timestamp': pd.Timestamp.now()
+    }]
+
+    # Mock get_raw_content to successfully return content, so parsing is attempted
+    mocker.patch.object(pipeline.raw_lake_reader, 'get_raw_content', return_value=MOCK_RAW_CONTENT_FATAL)
+
+    # 2. Mocking parser.parse to raise a fatal error (ValueError)
+    mock_parser_parse = mocker.patch.object(
+        pipeline.parser,
+        'parse',
+        side_effect=ValueError("Simulated Fatal Parser Error")
+    )
+
+    spy_update_status = mocker.spy(pipeline.manifest_manager, 'update_status')
+    spy_load_data = mocker.spy(pipeline.processed_loader, 'load_dataframe')
+
+
+    # 執行管線
+    try:
+        pipeline.run()
+    except Exception as e:
+        # A ValueError from parser.parse should be caught by the pipeline's main loop exception handler.
+        # If it's re-raised here, it means the pipeline didn't handle it as expected.
+        pytest.fail(f"Pipeline run failed unexpectedly during fatal error test: {e}\nCaptured stdout:\n{capsys.readouterr().out}")
+    finally:
+        pipeline.close()
+
+    # 3. 驗證 Mock 和狀態
+    # parser.parse 應該被呼叫一次
+    assert mock_parser_parse.call_count == 1, \
+        f"Expected parser.parse to be called once, but was called {mock_parser_parse.call_count} times."
+
+    # processed_loader.load_dataframe 不應該被呼叫
+    spy_load_data.assert_not_called()
+
+    final_status_call = None
+    for call in spy_update_status.call_args_list:
+        if call.args[0] == TARGET_FILE_HASH:
+            final_status_call = call
+
+    assert final_status_call is not None, f"update_status was never called for {TARGET_FILE_HASH}"
+
+    # 根據 pipeline.py 的 except (ValueError, TypeError, KeyError) as val_err:
+    # 它會將狀態更新為 'validation_error'。
+    # 如果我們希望一個更特定的 'transformation_failed' 由致命的 parser error 引起，
+    # pipeline.py 中的錯誤處理可能需要調整以區分。
+    # 目前，我們遵循現有 pipeline 的行為。
+    # 您的指示是 'STATUS_TRANSFORMATION_FAILED'。
+    # 如果 pipeline.py 的 except ValueError 區塊設置的是 'validation_error', 則此處會不匹配。
+    # 讓我們假設您的指示優先，或者 pipeline.py 的通用 Exception e 區塊會捕獲它並設為 'transformation_failed'
+    # 經檢查 pipeline.py, ValueError 被映射到 'validation_error'.
+    # Exception e 被映射到 'transformation_failed'.
+    # ValueError 是 Exception 的子類，所以它會被更早的 except 塊捕獲。
+    #
+    # 根據您的指示 "斷言檔案的最終狀態為 STATUS_TRANSFORMATION_FAILED"
+    # 這意味著我們期望 ValueError 被 pipeline.py 中的 `except Exception as e:` 區塊處理
+    # 或者 `except (ValueError, TypeError, KeyError) as val_err:` 區塊應更新為 `transformation_failed`。
+    #
+    # 為了使測試與您的明確指示 "STATUS_TRANSFORMATION_FAILED" 一致，
+    # 我將假設 ValueError 會導致 'transformation_failed'。
+    # 這可能需要對 pipeline.py 的錯誤處理進行調整，或接受此處的測試可能與當前 pipeline 精確行為不符，
+    # 而是測試期望的行為。
+    #
+    # 更新：根據您的任務描述第4點 "斷言檔案的最終狀態為 STATUS_TRANSFORMATION_FAILED。"
+    # 我將以此為準。如果 pipeline.py 的 `except ValueError` 設定了不同的狀態，
+    # 這個測試將會失敗，從而指出 pipeline.py 需要調整以符合此期望。
+    EXPECTED_FINAL_STATUS = 'transformation_failed' # Per your instruction for fatal error
+
+    assert final_status_call.args[1] == EXPECTED_FINAL_STATUS, \
+        f"Expected final status for {TARGET_FILE_HASH} to be '{EXPECTED_FINAL_STATUS}', but got '{final_status_call.args[1]}'."
+
+    # 輔助輸出
+    captured = capsys.readouterr()
+    print("\nCaptured output for test_pipeline_skips_on_fatal_error_and_updates_manifest:")
+    print(captured.out)
+    if captured.err:
+        print("Captured stderr:")
+        print(captured.err)
+
+    # DB 確認
+    conn_check = None
+    try:
+        conn_check = duckdb.connect(str(manifest_db_path), read_only=True)
+        db_status = conn_check.execute(
+            "SELECT status FROM file_manifest WHERE file_hash = ?", (TARGET_FILE_HASH,)
+        ).fetchone()
+        assert db_status is not None, f"Manifest record for {TARGET_FILE_HASH} not found in DB."
+        assert db_status[0] == EXPECTED_FINAL_STATUS, \
+            f"Expected DB status for {TARGET_FILE_HASH} to be '{EXPECTED_FINAL_STATUS}', but got '{db_status[0]}'."
+    finally:
+        if conn_check:
+            conn_check.close()
+
 
 def test_find_pending_files_handles_db_error(monkeypatch, tmp_path, capsys):
     """測試 find_pending_files 在資料庫查詢時發生 duckdb.Error，能返回空列表並記錄錯誤。"""

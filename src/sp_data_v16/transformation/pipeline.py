@@ -194,25 +194,37 @@ class TransformationPipeline:
                     self.manifest_manager.update_status(file_hash, 'processed')
                     print(f"[成功] 檔案 {file_hash} 已成功處理完畢！")
 
-                except pd.errors.ParserError as parse_err: # Pandas 解析錯誤
-                    error_msg = f"Pandas 解析錯誤: {parse_err}"
-                    print(f"[錯誤] 處理檔案 {file_hash} 時發生錯誤: {error_msg}")
+                # Errors during parsing stage (structural or decoding issues)
+                except (pd.errors.ParserError, UnicodeDecodeError, ValueError) as parse_related_err:
+                    # Check if the ValueError originates from the parser or is a more general one.
+                    # For now, grouping them as transformation_failed if they occur before validation.
+                    # If ValueError needs to be split based on origin (parser vs validator), more context in DataParser/DataValidator would be needed.
+                    # Based on user feedback, parser-related ValueErrors should lead to 'transformation_failed'.
+                    error_msg = f"解析或轉換階段錯誤: {parse_related_err}"
+                    logging.error(f"[錯誤] 處理檔案 {file_path} (Hash: {file_hash[:8]}) 時發生解析或轉換階段錯誤: {error_msg}")
+                    print(f"[錯誤] 處理檔案 {file_hash} 時發生解析或轉換階段錯誤: {error_msg}")
                     if file_hash:
-                        self.manifest_manager.update_status(file_hash, 'parse_error_parser_failed')
-                except UnicodeDecodeError as uni_err: # 編碼錯誤
-                    error_msg = f"編碼錯誤: {uni_err}"
-                    print(f"[錯誤] 處理檔案 {file_hash} 時發生錯誤: {error_msg}")
+                        self.manifest_manager.update_status(file_hash, 'transformation_failed')
+
+                # Errors related to data type/value issues after successful parsing, but typically caught by DataValidator.
+                # This block might catch other KeyErrors or TypeErrors not from parsing.
+                # If DataValidator catches and returns None/empty, it's handled before this.
+                # This block is more for unexpected errors after parsing but before/during loading, if not IO or DB related.
+                except (TypeError, KeyError) as data_err: # Data-related errors not caught by explicit parsing exceptions
+                    error_msg = f"資料處理錯誤 (非解析): {data_err}"
+                    logging.error(f"[錯誤] 處理檔案 {file_path} (Hash: {file_hash[:8]}) 時發生資料處理錯誤: {error_msg}")
+                    print(f"[錯誤] 處理檔案 {file_hash} 時發生資料處理錯誤: {error_msg}")
                     if file_hash:
-                        # 雖然 parser.py 內部會捕捉這個，但如果它逃逸了，這裡可以捕捉
-                        self.manifest_manager.update_status(file_hash, 'parse_error_parser_failed')
-                except (ValueError, TypeError, KeyError) as val_err: # 一般資料處理/驗證錯誤
-                    error_msg = f"資料處理/驗證錯誤: {val_err}"
-                    print(f"[錯誤] 處理檔案 {file_hash} 時發生錯誤: {error_msg}")
-                    if file_hash:
+                        # Deciding status: 'validation_error' if it implies bad data content,
+                        # or 'transformation_failed' if it's a more structural issue missed by parser exceptions.
+                        # Given the context, 'validation_error' seems appropriate if it's about data values/types
+                        # not fitting subsequent processing steps after parsing.
                         self.manifest_manager.update_status(file_hash, 'validation_error')
-                except Exception as e: # 其他所有未預期錯誤
+
+                except Exception as e: # Catch-all for other unexpected errors (e.g., IO, DB issues not caught by specific handlers)
                     error_msg = f"未預期錯誤: {e}"
-                    print(f"[錯誤] 處理檔案 {file_hash} 時發生嚴重錯誤: {error_msg}")
+                    logging.error(f"[錯誤] 處理檔案 {file_path} (Hash: {file_hash[:8]}) 時發生嚴重未預期錯誤: {error_msg}")
+                    print(f"[錯誤] 處理檔案 {file_hash} 時發生嚴重未預期錯誤: {error_msg}")
                     if file_hash: # Ensure file_hash is available
                         self.manifest_manager.update_status(file_hash, 'transformation_failed')
         finally:
