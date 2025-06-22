@@ -65,8 +65,10 @@ def init_raw_lake_db(conn):
     conn.execute("""
         CREATE TABLE IF NOT EXISTS raw_file_blobs (
             file_hash TEXT PRIMARY KEY,
-            content_blob BLOB NOT NULL,
-            FOREIGN KEY (file_hash) REFERENCES files_master(file_hash)
+            content_blob BLOB NOT NULL
+            -- Removed FOREIGN KEY (file_hash) REFERENCES files_master(file_hash)
+            -- to simplify initialization and avoid cross-DB FK issues with DuckDB's file-based nature.
+            -- Data integrity will be managed at the application level.
         );
     """)
     # Example for API responses, if needed later
@@ -88,16 +90,16 @@ def init_curated_mart_db(conn):
     # Example table for CSV data (adapt from v8.0 or define new)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS example_curated_data (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            -- id INTEGER PRIMARY KEY, -- Removed to let DuckDB handle rowid implicitly if needed, and simplify pandas to_sql
             file_hash TEXT,
             original_source_identifier TEXT,
             processed_timestamp TIMESTAMP,
-            -- Add columns specific to your curated data
-            -- For example, if processing CSVs:
-            -- column1 TEXT,
-            -- column2 DOUBLE,
-            -- date_column DATE,
-            FOREIGN KEY (file_hash) REFERENCES files_master(file_hash)
+            -- Add columns specific to your curated data from CSVs
+            -- For sample1.csv, we expect col_a, col_b, col_c
+            col_a TEXT,
+            col_b TEXT,
+            col_c TEXT
+            -- Removed FOREIGN KEY (file_hash) REFERENCES files_master(file_hash)
         );
     """)
     conn.execute("""
@@ -107,8 +109,8 @@ def init_curated_mart_db(conn):
             height INTEGER,
             format TEXT,
             source_identifier TEXT,
-            processed_at TIMESTAMP,
-            FOREIGN KEY (file_hash) REFERENCES files_master(file_hash)
+            processed_at TIMESTAMP
+            -- Removed FOREIGN KEY (file_hash) REFERENCES files_master(file_hash)
         );
     """)
     conn.commit()
@@ -118,12 +120,21 @@ def initialize_databases():
     """Connects to all databases and initializes their schemas if needed."""
     logger.info("Initializing all databases...")
     try:
+        # Initialize Manifest DB first as other DBs might have foreign keys to it
         with duckdb.connect(config.MANIFEST_DB_PATH) as manifest_conn:
             init_manifest_db(manifest_conn)
+        logger.info("Manifest DB initialized.")
+
+        # Then initialize Raw Lake DB
         with duckdb.connect(config.RAW_LAKE_DB_PATH) as raw_lake_conn:
             init_raw_lake_db(raw_lake_conn)
+        logger.info("Raw Lake DB initialized.")
+
+        # Finally, initialize Curated Mart DB
         with duckdb.connect(config.CURATED_MART_DB_PATH) as curated_mart_conn:
             init_curated_mart_db(curated_mart_conn)
+        logger.info("Curated Mart DB initialized.")
+
         logger.info("All databases initialized successfully.")
         return True
     except Exception as e:
