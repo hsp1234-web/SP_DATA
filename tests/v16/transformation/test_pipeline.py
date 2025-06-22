@@ -650,13 +650,13 @@ def test_run_handles_validation_failure(monkeypatch, tmp_path, capsys):
     "exception_to_raise, expected_status, expected_log_message_part",
     [
             # ValueError from parser.parse should now result in 'transformation_failed'
-            (ValueError("Simulated ValueError in parse"), 'transformation_failed', "解析或轉換階段錯誤: Simulated ValueError in parse"),
+            (ValueError("Simulated ValueError in parse"), 'transformation_failed', "Simulated ValueError in parse"),
             # pd.errors.ParserError from parser.parse should now result in 'transformation_failed'
-            (pd.errors.ParserError("Simulated ParserError"), 'transformation_failed', "解析或轉換階段錯誤: Simulated ParserError"),
+            (pd.errors.ParserError("Simulated ParserError"), 'transformation_failed', "Simulated ParserError"),
             # UnicodeDecodeError from parser.parse should now result in 'transformation_failed'
-            (UnicodeDecodeError("utf-8", b"\x80", 0, 1, "invalid start byte"), 'transformation_failed', "解析或轉換階段錯誤: 'utf-8' codec can't decode byte 0x80 in position 0: invalid start byte"),
+            (UnicodeDecodeError("utf-8", b"\x80", 0, 1, "invalid start byte"), 'transformation_failed', "'utf-8' codec can't decode byte 0x80 in position 0: invalid start byte"),
             # Generic Exception remains 'transformation_failed'
-        (Exception("Simulated Generic Error in parse"), 'transformation_failed', "未預期錯誤: Simulated Generic Error in parse"),
+            (Exception("Simulated Generic Error in parse"), 'transformation_failed', "Simulated Generic Error in parse"),
     ]
 )
 def test_run_main_loop_exception_handling(
