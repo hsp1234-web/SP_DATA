@@ -1,0 +1,8 @@
+duckdb
+pandas
+python-magic
+Pillow
+# Add other specific dependencies if/when they are used, e.g.:
+# openpyxl # For reading .xlsx files with pandas
+# pyarrow  # For parquet file interaction, if used
+# requests # For API interactions, if used

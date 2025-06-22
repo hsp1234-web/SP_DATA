@@ -1,41 +1,94 @@
-# 數據整合平台 v15 - 智慧更新版
+# Next Generation Financial Data Platform (Simplified)
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/hsp1234-web/taifexd-date/blob/main/run_stable.ipynb)
+This project is a data pipeline designed to ingest, process, and curate various types of data, including financial data, documents, images, and multimedia files. The goal is to create a high-quality, integrated database suitable for machine learning, backtesting, and visualization.
 
-**注意：** 我們建議使用 `run_stable.ipynb` 做為新的穩定版本執行入口。
+This version focuses on a simplified, three-stage architecture using DuckDB for local data management.
 
-本專案是一個為處理台灣期貨交易所 (TAIFEX) 每日交易數據而設計的自動化數據整合平台。此版本內建智慧更新與參數化執行功能。
+## Project Structure
 
-## 使用教學
+```
+your_project_name/
+├── data_pipeline.py       # Main processing logic
+├── config.py              # Configuration (paths, logging, etc.)
+├── requirements.txt       # Python dependencies
+├── README.md              # This file
+├── .gitignore             # Git ignore settings
+|
+├── Data test/             # Input test files (images, CSVs, etc.)
+│   ├── image1.jpg
+│   └── document1.csv
+|
+├── database/              # DuckDB database files
+│   ├── manifest.db
+│   ├── raw_lake.db
+│   └── curated_mart.db
+|
+└── logs/                  # Execution log files
+    └── pipeline_run_YYYYMMDD_HHMMSS.log
+```
 
-本專案的核心是提供一個可重複使用的 Google Colab 筆記本。
+## Core Architecture: Three-Database Model
 
-### 首次設定
+1.  **`manifest.db` (Brain/Catalog)**: Records metadata for all incoming files (hash, path, status, basic metadata). Acts as the single source of truth for file processing status.
+2.  **`raw_lake.db` (Raw Storage)**: Stores the original, unaltered content of all incoming files (e.g., as BLOBs). The principle is "get the data in" reliably.
+3.  **`curated_mart.db` (Processed/Showcase)**: Stores cleaned, transformed, and enriched data ready for analysis.
 
-1. 點擊上方的 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/hsp1234-web/taifexd-date/blob/main/run_stable.ipynb) 徽章，開啟公版「樣板筆記本」。
-2. 在 Colab 選單中，點擊 **「檔案」(File)** -> **「在雲端硬碟中儲存複本」(Save a copy in Drive)**。
-3. 這會在您的 Google Drive 中建立一個專屬於您的「個人版筆記本」。**請關閉公版，並在您個人的版本上進行所有後續操作。**
+## Pipeline Stages
 
-### 日常執行
+The `data_pipeline.py` script executes the following stages:
 
-1. 從您的 Google Drive 開啟您的「個人版筆記本」。
-2. 執行第一個儲存格，它會自動從 GitHub 下載最新程式碼、安裝精確的套件版本，並讓您設定本次執行的參數。
-3. 依照筆記本中的引導完成操作即可。
+1.  **Stage 1: Ingest and Register**:
+    *   Scans the input directory (`Data test/`).
+    *   For each new file:
+        *   Calculates its SHA256 hash.
+        *   Stores the raw file content into `raw_lake.db`.
+        *   Extracts basic metadata (filename, MIME type, file system dates).
+        *   Registers the file and its metadata in `manifest.db` with status `'raw_stored'`.
 
-## 預期 Google Drive 資料夾結構
+2.  **Stage 2: Derive Date**:
+    *   Scans `manifest.db` for files with status `'raw_stored'`.
+    *   Attempts to derive a primary date (`derived_date`) for each file from its metadata (e.g., file modification date, EXIF date).
+    *   Updates the `derived_date` in `manifest.db`.
 
-本專案會在您的 Google Drive 根目錄下，尋找您所設定的專案資料夾（預設為 `MyTaifexDataProject`）。請確保您的資料夾結構如下：
+3.  **Stage 3: Curate Data**:
+    *   Scans `manifest.db` for files ready for curation (e.g., status `'raw_stored'` or `'date_derived'`).
+    *   Based on the file's `raw_content_type`, a specific "processor" is chosen:
+        *   **CSV/Excel Processor**: (Inspired by v8.0 logic) Attempts to read with Pandas, perform basic cleaning/transformation, and load into a table in `curated_mart.db`.
+        *   **Image Processor**: Extracts basic image features (e.g., dimensions) and stores them in `curated_mart.db`.
+        *   Other processors can be added for different file types.
+    *   **Error Handling**: If a file cannot be processed by any known processor, its status is updated to `'unsupported_type'`. If a processor encounters an error, the status is updated to `'curation_error'` with an error message. The pipeline will not crash due to individual file errors.
+    *   Successfully processed files are marked as `'curated'`.
 
-MyTaifexDataProject/
-│
-├── Input/
-│   ├── zip/
-│   │   ├── TAIFEX_ABC.zip
-│   │   └── TAIFEX_XYZ.zip
-│   └── (unzip)/
-│
-└── Output/
-    ├── database/
-    │   └── processed_data.duckdb (此檔名可由參數控制)
-    └── log/
-        └── pipeline.log (此檔名可由參數控制)
+## Setup
+
+1.  **Clone the repository (if applicable).**
+2.  **Create a Python virtual environment (recommended):**
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # On Windows: venv\Scripts\activate
+    ```
+3.  **Install dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+    *Note: `python-magic` might have system-level dependencies. Refer to its documentation for installation on your OS (e.g., `libmagic` on Linux, or install via Homebrew on macOS).*
+4.  **Prepare `Data test/` folder:** Place some sample files (CSVs, JPEGs, etc.) into the `Data test/` directory.
+5.  **Review `config.py`:** Ensure paths and settings are appropriate for your environment (defaults should work for a standard setup).
+
+## Running the Pipeline
+
+Execute the main script from the project root directory:
+
+```bash
+python data_pipeline.py
+```
+
+Logs will be generated in the `logs/` directory, and also printed to the console.
+Database files will be created/updated in the `database/` directory (or project root if `DATABASE_DIR` in `config.py` is changed).
+
+## Development Notes
+
+*   **Idempotency**: The pipeline aims to be idempotent. Re-running it should not duplicate data if files haven't changed (due to hash checking).
+*   **Extensibility**: New file type processors can be added in Stage 3 by creating new functions and mapping them in the `CONTENT_PROCESSORS` dictionary (to be implemented).
+*   **Error Resilience**: The pipeline is designed to skip problematic files and log errors, rather than crashing. Check `manifest.db` statuses and logs to identify and address issues.
+```
