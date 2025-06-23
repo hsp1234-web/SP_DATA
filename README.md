@@ -1,94 +1,47 @@
-# 次世代金融數據平台 (簡化版)
+# 全自動本地智慧期交所數據管道 (Taifex Intelligent Data Pipeline)
 
-本專案是一個數據管道，旨在接收、處理並管理各種類型的數據，包括金融數據、文件、圖片及多媒體檔案。最終目標是建立一個高品質、整合的資料庫，適用於機器學習分析、策略回測及視覺化報告。
+## 專案概述
 
-此版本專注於一個簡化的三階段架構，使用 DuckDB 進行本地數據管理。
+本專案旨在開發一套完整、全自動、且高效的本地智慧數據解決方案，專門用於處理來自台灣期貨交易所 (TAIFEX) 的大量且多樣化的公開數據。系統的設計目標是實現高度的適應性、穩定性和運算效能，能夠自動辨識不同的檔案格式，執行精確的數據清洗與轉換，並將最終結果儲存於結構化的分析型資料庫中。此外，本專案也強調提供完善的日誌記錄、狀態監控以及錯誤管理機制，以確保數據處理流程的透明度與可維護性。
 
-## 專案結構
+##核心設計與功能
 
-```
-your_project_name/
-├── data_pipeline.py       # 主要處理邏輯
-├── config.py              # 設定檔 (路徑、日誌等)
-├── requirements.txt       # Python 依賴套件
-├── README.md              # 本檔案 (說明文件)
-├── .gitignore             # Git 忽略設定
-|
-├── Data test/             # 輸入的測試檔案 (圖片、CSV等)
-│   ├── image1.jpg
-│   └── document1.csv
-|
-├── database/              # DuckDB 資料庫檔案
-│   ├── manifest.db
-│   ├── raw_lake.db
-│   └── curated_mart.db
-|
-└── logs/                  # 執行的日誌檔案
-    └── pipeline_run_YYYYMMDD_HHMMSS.log
-```
+本數據管道的核心設計基於以下幾個關鍵組件與原則：
 
-## 核心架構：三資料庫模型
+1.  **格式指紋目錄 (Format Fingerprint Catalog)**：
+    *   透過對檔案標頭內容進行正規化處理並計算 SHA256 雜湊值，為每種獨特的檔案格式生成「指紋」。
+    *   一個中央化的 `format_catalog.json` 設定檔，將「指紋」映射到詳細的「處理配方」（包含目標資料表、Pandas 解析參數、專用清洗函式名稱、必要欄位列表等）。
 
-1.  **`manifest.db` (大腦/目錄)**：記錄所有傳入檔案的元數據（雜湊值、路徑、狀態、基礎元數據）。作為檔案處理狀態的單一事實來源。
-2.  **`raw_lake.db` (原始儲藏室)**：儲存所有傳入檔案的原始、未經修改的內容（例如，以 BLOB 形式）。原則是可靠地「接收數據」。
-3.  **`curated_mart.db` (加工品/展示廳)**：儲存經過清理、轉換和豐富化後，可直接用於分析的數據。
+2.  **兩階段自動化管線 (Two-Stage Automated Pipeline)**：
+    *   **第一階段 - 汲取 (Ingestion)**：極速、穩定、零解析。此階段負責將原始檔案（不論來源）未經修改地完整存入 `raw_lake.db` (一個 SQLite/DuckDB 資料庫，儲存檔案內容的 BLOB)，並在 `manifest.db` (一個 SQLite/DuckDB 資料庫) 中登記檔案雜湊與汲取狀態。
+    *   **第二階段 - 轉換 (Transformation)**：智慧、平行、可重跑。此階段根據 `manifest.db` 的記錄，平行處理已汲取但未轉換的檔案。主要流程包括：讀取原始數據 -> 計算格式指紋 -> 查詢處理配方 -> 數據解析 (Parsing) -> 數據清洗 (Cleaning) -> 載入最終資料庫。
 
-## 管線階段
+3.  **資源最大化與狀態管理 (Resource Maximization & State Management)**：
+    *   動態偵測 CPU 核心數並行化處理轉換任務。
+    *   精細的記憶體管理策略，包括對 DuckDB 設定記憶體限制及對大檔案採用分塊處理。
+    *   `manifest.db` 作為詳盡的審計與監控日誌，記錄每個檔案從汲取到轉換的完整生命週期狀態及相關元數據。
 
-`data_pipeline.py` 腳本會執行以下階段：
+4.  **日誌輸出 (Logging Output)**：
+    *   採用雙軌制日誌系統：
+        *   **主控台即時報告**：提供給操作者直觀、易讀的進度反饋。
+        *   **結構化日誌檔案 (JSON)**：記錄詳細的、機器可解析的日誌事件，便於後續分析與問題排查。每條日誌包含精確時間戳、執行ID、級別、模組來源、檔案雜湊及訊息內容。
 
-1.  **階段一：接收與註冊 (Ingest and Register)**：
-    *   掃描輸入目錄 (`Data test/`)。
-    *   對於每個新檔案：
-        *   計算其 SHA256 雜湊值。
-        *   將原始檔案內容存入 `raw_lake.db`。
-        *   提取基礎元數據（檔案名稱、MIME 類型、檔案系統日期）。
-        *   在 `manifest.db` 中註冊檔案及其元數據，狀態為 `'raw_stored'`。
+5.  **專案結構與程式碼品質 (Project Structure & Code Style)**：
+    *   遵循「關注點分離」與「模組化」原則，採用標準化的 Python 專案目錄結構。
+    *   強制使用 `black` 進行程式碼格式化，`Ruff` 進行 Linting，以及 `mypy` 進行靜態類型檢查，並透過 `pre-commit` 掛鉤自動化執行，確保程式碼品質與風格一致性。
 
-2.  **階段二：派生日期 (Derive Date)**：
-    *   掃描 `manifest.db` 中狀態為 `'raw_stored'` 的檔案。
-    *   嘗試從其元數據（例如檔案修改日期、EXIF 日期）中為每個檔案派生一個主要日期 (`derived_date`)。
-    *   更新 `manifest.db` 中的 `derived_date`。
+## 詳細設計文檔
 
-3.  **階段三：數據整理 (Curate Data)**：
-    *   掃描 `manifest.db` 中準備進行整理的檔案（例如，狀態為 `'raw_stored'` 或 `'date_derived'`）。
-    *   根據檔案的 `raw_content_type`，選擇一個特定的「處理器」：
-        *   **CSV/Excel 處理器**：（參考 v8.0 邏輯）嘗試使用 Pandas 讀取，執行基礎的清理/轉換，並載入到 `curated_mart.db` 中的一個表格。
-        *   **圖片處理器**：提取基礎的圖片特徵（例如尺寸）並儲存到 `curated_mart.db`。
-        *   可為不同檔案類型添加其他處理器。
-    *   **錯誤處理**：如果某檔案無法被任何已知處理器處理，其狀態將更新為 `'unsupported_type'`。如果處理器遇到錯誤，狀態將更新為 `'curation_error'` 並附帶錯誤訊息。管線不會因個別檔案錯誤而崩潰。
-    *   成功處理的檔案標記為 `'curated'`。
+關於本專案更詳細的設計決策、架構藍圖、各模組介面定義以及具體實施細節，請參閱位於本倉儲根目錄下的 `Program_Development_Project.txt` 文件。該文件是我們進行專案開發的核心指導文獻。
 
-## 設定步驟
+## 版本與分支
 
-1.  **複製儲存庫 (若適用)。**
-2.  **建立 Python 虛擬環境 (建議)：**
-    ```bash
-    python -m venv venv
-    source venv/bin/activate  # Windows 環境: venv\Scripts\activate
-    ```
-3.  **安裝依賴套件：**
-    ```bash
-    pip install -r requirements.txt
-    ```
-    *注意：`python-magic` 可能有系統層級的依賴。請參考其文件以在您的作業系統上安裝（例如，Linux 上的 `libmagic`，或在 macOS 上透過 Homebrew 安裝）。*
-4.  **準備 `Data test/` 資料夾：** 將一些範例檔案（CSV、JPEG 等）放入 `Data test/` 目錄。
-5.  **檢閱 `config.py`：** 確保路徑和設定適合您的環境（預設值應適用於標準設定）。
+*   當前開發分支： `main_v3.0.1`
 
-## 執行管線
+## 語言
 
-從專案根目錄執行主要腳本：
+本專案所有程式碼註解、日誌訊息以及相關文檔（包括本 README 和 `Program_Development_Project.txt`）均優先使用**繁體中文**。專有名詞和無法避免的技術術語可能會保留英文原文以確保精確性。
 
-```bash
-python data_pipeline.py
-```
-
-日誌將產生在 `logs/` 目錄中，同時也會打印到控制台。
-資料庫檔案將在 `database/` 目錄中建立/更新（如果在 `config.py` 中的 `DATABASE_DIR` 被更改，則可能在專案根目錄）。
-
-## 開發注意事項
-
-*   **冪等性 (Idempotency)**：此管線設計目標是冪等的。如果檔案未更改（基於雜湊值檢查），重新執行不應導致數據重複。
-*   **擴展性 (Extensibility)**：可以在階段三中通過創建新函數並將它們映射到 `CONTENT_PROCESSORS` 字典（待實現）來添加新的檔案類型處理器。
-*   **錯誤彈性 (Error Resilience)**：管線設計為跳過有問題的檔案並記錄錯誤，而不是崩潰。檢查 `manifest.db` 的狀態和日誌以識別和解決問題。
-```
+---
+*本 README.md 文件由 Jules (AI Software Engineer) 協助產生。*
+*最後更新時間: (Jules 自動填寫)*
