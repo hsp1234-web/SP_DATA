@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 # 取得由 logger_setup 設定的 logger
 # 這裡假設 logger 已經在應用程式的某個早期點被初始化
@@ -9,7 +9,7 @@ from typing import Dict, Any, Optional
 logger = logging.getLogger("taifex_pipeline.core.config_loader")
 
 # 模組級快取變數
-_cached_format_catalog: Optional[Dict[str, Any]] = None
+_cached_format_catalog: Dict[str, Any] | None = None # 仍然可以是 None (未快取時)
 
 # 設定檔的相對路徑
 # __file__ 是目前檔案 (config_loader.py) 的路徑
@@ -19,17 +19,18 @@ _cached_format_catalog: Optional[Dict[str, Any]] = None
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_CATALOG_PATH = os.path.join(_PROJECT_ROOT, "config", "format_catalog.json")
 
-def load_format_catalog(catalog_path: str = DEFAULT_CATALOG_PATH) -> Optional[Dict[str, Any]]:
+def load_format_catalog(catalog_path: str = DEFAULT_CATALOG_PATH) -> Dict[str, Any]:
     """
     讀取並解析位於指定路徑的 format_catalog.json 檔案。
     包含錯誤處理機制 (FileNotFoundError, JSONDecodeError) 和記憶體快取功能。
+    檔案不存在或解析錯誤時會拋出相應異常。
 
     Args:
         catalog_path (str): format_catalog.json 檔案的路徑。
                             預設為專案根目錄下的 'config/format_catalog.json'。
 
     Returns:
-        Optional[Dict[str, Any]]: 解析後的 JSON 內容 (字典)，如果發生錯誤或檔案不存在則返回 None。
+        Dict[str, Any]: 解析後的 JSON 內容 (字典)。
     """
     global _cached_format_catalog
 
@@ -43,7 +44,7 @@ def load_format_catalog(catalog_path: str = DEFAULT_CATALOG_PATH) -> Optional[Di
         # 確認檔案是否存在
         if not os.path.exists(catalog_path):
             logger.error(f"設定檔 '{catalog_path}' 不存在。")
-            raise FileNotFoundError(f"設定檔 '{catalog_path}' 不存在。")
+            raise FileNotFoundError(f"設定檔 '{catalog_path}' 不存在。") # 直接拋出
 
         with open(catalog_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -51,18 +52,18 @@ def load_format_catalog(catalog_path: str = DEFAULT_CATALOG_PATH) -> Optional[Di
         _cached_format_catalog = data
         logger.info(f"成功讀取並快取 format_catalog (來自: {catalog_path})。")
         return data
-    except FileNotFoundError:
-        # 這個錯誤已在上面處理並記錄，這裡只是為了確保 FileNotFoundError 被正確拋出給呼叫者（如果需要）
-        # 或者，我們可以讓函式在 FileNotFoundError 時返回 None，並依賴日誌記錄
-        # 為了與函式簽名 Optional[Dict[str, Any]] 一致，這裡返回 None
-        # logger.error(...) 已經在檢查 os.path.exists 時完成
-        return None
+    except FileNotFoundError: # 由 os.path.exists 檢查後拋出
+        logger.warning(f"load_format_catalog 捕獲到 FileNotFoundError: {catalog_path}")
+        raise # 重新拋出，讓呼叫者處理
     except json.JSONDecodeError as e:
         logger.error(f"解析 JSON 設定檔 '{catalog_path}' 時發生錯誤: {e}")
-        return None
+        # 考慮是否也應該拋出此錯誤，或者返回 None/空字典
+        # 為了與 FileNotFoundError 的行為一致，且讓呼叫者能明確知道錯誤，選擇拋出
+        raise # 或者 raise CustomConfigError("JSON 解析失敗") from e
     except Exception as e:
         logger.error(f"讀取設定檔 '{catalog_path}' 時發生未預期的錯誤: {e}")
-        return None
+        # 同樣，考慮拋出
+        raise # 或者 raise CustomConfigError("未知設定檔讀取錯誤") from e
 
 def clear_config_cache() -> None:
     """
