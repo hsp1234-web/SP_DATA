@@ -1,36 +1,19 @@
-[project]
-name = "data-pipeline-v15"
-version = "0.1.0"
-
-description = "數據整合平台 v15 的核心處理引擎"
-authors = [
-    {name = "google-labs-jules[bot]",email = "161369871+google-labs-jules[bot]@users.noreply.github.com"}
-]
-readme = "README.md"
-requires-python = ">=3.11"
-dependencies = [
-
-    "psutil (>=7.0.0,<8.0.0)",
-    "pandas (>=2.3.0,<3.0.0)",
-    "pyarrow (>=20.0.0,<21.0.0)",
-    "duckdb (>=1.3.1,<2.0.0)",
-    "pytz",
-    "python-json-logger (>=2.0.7,<3.0.0)",
-    "pyyaml (>=6.0,<7.0.0)"
-,
-    "tqdm (>=4.62.0,<5.0.0)"
-]
-
+# pyproject.toml
+# 此檔案用於專案依賴管理，目前可為空。
+# 未來可以使用 Poetry 或其他工具來管理專案的依賴。
 
 [tool.poetry]
-packages = [{include = "data_pipeline_v15", from = "src"}]
+name = "taifex-pipeline"
+version = "0.1.0"
+description = "智能型期交所數據整合管道"
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
 
-
-[tool.poetry.group.dev.dependencies]
-pytest = "^8.4.1"
-black = "^25.1.0"
-pytest-mock = "^3.14.0"
+[tool.poetry.dependencies]
+python = "^3.8"
+python-json-logger = "^2.0.7"
+pytz = "^2023.3.post1"
 
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
+requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
