@@ -1,0 +1,11 @@
+# MyTaifexDataProject/config.yaml
+
+# ==============================================================================
+# METADATA SCANNER SETTINGS
+# ==============================================================================
+metadata_scanner:
+  # Path to the directory containing processed Parquet files
+  parquet_dir: "data/02_processed"
+
+  # Path to the metadata SQLite database
+  db_path: "data/metadata.db"
