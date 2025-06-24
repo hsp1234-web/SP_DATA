@@ -1,156 +1,124 @@
-import logging
-import os
-import hashlib
+import zipfile
+import collections
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from taifex_pipeline.database.db_manager import DBManager
-
-# 取得 logger
-# 假設應用程式的進入點 (如 run.py) 已經呼叫了 setup_logger
-logger = logging.getLogger("taifex_pipeline.ingestion.pipeline")
+from ..core.logger_setup import get_logger
 
 class IngestionPipeline:
     """
-    一個汲取管線，用於掃描來源目錄，並將新檔案處理到資料庫中。
+    Handles the ingestion of data from a source directory, processing
+    zip files, and extracting their contents. This version supports
+    nested zip files.
     """
 
-    def __init__(self, db_manager: "DBManager", source_directory: str):
+    def __init__(self, config: dict):
         """
-        初始化 IngestionPipeline。
+        Initializes the IngestionPipeline.
 
         Args:
-            db_manager (DBManager): DBManager 的實例，用於資料庫操作。
-            source_directory (str): 要掃描檔案的來源目錄路徑。
+            config: A dictionary containing pipeline configurations.
         """
-        if db_manager is None:
-            logger.error("DBManager 實例不能為 None。")
-            raise ValueError("DBManager 實例不能為 None。")
-        if not source_directory:
-            logger.error("來源目錄路徑不能為空。")
-            raise ValueError("來源目錄路徑不能為空。")
-        if not os.path.isdir(source_directory):
-            logger.error(f"指定的來源目錄不存在或不是一個目錄: {source_directory}")
-            raise FileNotFoundError(f"指定的來源目錄不存在或不是一個目錄: {source_directory}")
+        ingestion_config = config.get("ingestion", {})
+        self.source_dir = Path(ingestion_config.get("source_dir", "data/00_source"))
+        self.output_dir = Path(ingestion_config.get("output_dir", "data/01_raw"))
+        self.logger = get_logger(self.__class__.__name__)
 
-        self.db_manager = db_manager
-        self.source_directory = Path(source_directory) # 使用 pathlib 進行路徑操作
-        logger.info(f"IngestionPipeline 初始化完成。來源目錄: '{self.source_directory}'")
+        # 1. 初始化動態工作佇列和已處理路徑集合
+        self.work_queue = collections.deque()
+        self.processed_paths = set()
 
-    def _calculate_sha256(self, file_path: Path) -> str:
+    def _scan_initial_zips(self):
+        """Scans the source directory for top-level zip files to seed the queue."""
+        self.logger.info(f"Scanning for initial zip files in {self.source_dir}...")
+        initial_files = [p for p in self.source_dir.glob("*.zip")]
+        self.work_queue.extend(initial_files)
+        self.logger.info(f"Found {len(initial_files)} initial zip files to process.")
+
+    def _process_single_zip(self, zip_path: Path) -> list[Path]:
         """
-        計算檔案內容的 SHA256 雜湊值。
+        Processes a single zip file, extracts its contents, and identifies
+        any nested zip files.
 
         Args:
-            file_path (Path): 檔案的路徑。
+            zip_path: The path to the zip file to process.
 
         Returns:
-            str: 檔案內容的 SHA256 雜湊值 (十六進位字串)。
+            A list of paths to any newly found nested zip files.
         """
-        sha256_hash = hashlib.sha256()
+        nested_zips_found = []
+        self.logger.info(f"Processing archive: {zip_path.name}")
+
         try:
-            with open(file_path, "rb") as f:
-                # 一塊一塊讀取檔案，避免一次載入大檔案到記憶體
-                for byte_block in iter(lambda: f.read(4096), b""):
-                    sha256_hash.update(byte_block)
-            hex_digest = sha256_hash.hexdigest()
-            logger.debug(f"計算檔案 '{file_path}' 的 SHA256 雜湊值為: {hex_digest}")
-            return hex_digest
-        except FileNotFoundError:
-            logger.error(f"計算雜湊值時找不到檔案: {file_path}")
-            raise
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                for member_info in zf.infolist():
+                    if member_info.is_dir():
+                        continue
+
+                    member_path = Path(member_info.filename) # Relative path within zip
+                    # Ensure output_path is relative to self.output_dir for consistent structure
+                    # If member_path can contain ".." or absolute paths, sanitization might be needed.
+                    # For now, assume member_path.name is sufficient if flat structure in output is OK.
+                    # If preserving internal zip structure: output_file_path = self.output_dir / member_info.filename
+                    # Current implementation extracts all members to the root of self.output_dir using member_path.name
+                    output_file_path = self.output_dir / member_path.name
+
+                    if member_path.name.lower().endswith('.zip'):
+                        # This is a nested zip file. Extract it and add to queue.
+                        self.logger.info(f"  Found nested archive: {member_path.name}. Extracting to {output_file_path}...")
+                        # Extract the nested zip into the raw output directory
+                        # Ensure parent directory for output_file_path exists if preserving structure
+                        output_file_path.parent.mkdir(parents=True, exist_ok=True)
+                        with zf.open(member_info) as source, open(output_file_path, 'wb') as target:
+                            target.write(source.read())
+                        nested_zips_found.append(output_file_path)
+                    else:
+                        # This is a regular data file.
+                        self.logger.debug(f"  Extracting data file: {member_path.name} to {output_file_path}")
+                        # Ensure parent directory for output_file_path exists
+                        output_file_path.parent.mkdir(parents=True, exist_ok=True)
+                        with zf.open(member_info) as source, open(output_file_path, 'wb') as target:
+                            target.write(source.read())
+
+        except zipfile.BadZipFile:
+            self.logger.error(f"Failed to process {zip_path.name}: Corrupted zip file.")
         except Exception as e:
-            logger.error(f"計算檔案 '{file_path}' 的雜湊值時發生錯誤: {e}")
-            raise
+            self.logger.error(f"An unexpected error occurred while processing {zip_path.name}: {e}", exc_info=True)
+
+        return nested_zips_found
 
     def run(self):
         """
-        執行汲取管線：掃描來源目錄，處理新檔案並將其儲存到資料庫。
+        Executes the ingestion pipeline using a dynamic work queue to handle
+        nested zip files.
         """
-        logger.info(f"開始執行汲取管線，掃描目錄: {self.source_directory}")
-        total_files_scanned = 0
-        new_files_ingested = 0
-        files_skipped = 0
-        files_failed = 0
+        # 確保輸出目錄存在
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # 使用 pathlib.Path.rglob 來遞迴掃描所有檔案
-        # 如果只想掃描頂層目錄，可以使用 self.source_directory.glob('*')
-        for file_path in self.source_directory.rglob('*'):
-            if file_path.is_file(): # 只處理檔案，忽略目錄
-                total_files_scanned += 1
-                logger.info(f"掃描到檔案: {file_path}")
-                try:
-                    # 1. 計算檔案雜湊值
-                    file_hash = self._calculate_sha256(file_path)
-                    logger.debug(f"檔案 '{file_path}' 的 SHA256 雜湊值: {file_hash}")
+        # 2. 掃描頂層目錄，初始化佇列
+        self._scan_initial_zips()
 
-                    # 2. 檢查檔案是否已存在
-                    if self.db_manager.check_hash_exists(file_hash):
-                        logger.info(f"檔案 '{file_path}' (雜湊: {file_hash}) 已存在於資料庫中，跳過。")
-                        files_skipped += 1
-                        continue
+        # 3. 只要佇列不為空，就持續處理
+        while self.work_queue:
+            file_path = self.work_queue.popleft()
 
-                    # 3. 如果是新檔案，處理入庫
-                    logger.info(f"偵測到新檔案: '{file_path}' (雜湊: {file_hash})，開始處理...")
+            # Resolve path to ensure consistency in processed_paths set
+            resolved_file_path = file_path.resolve()
 
-                    # 3a. 讀取檔案內容
-                    try:
-                        with open(file_path, "rb") as f:
-                            raw_content = f.read()
-                    except Exception as e:
-                        logger.error(f"讀取檔案 '{file_path}' 內容時失敗: {e}")
-                        files_failed += 1
-                        continue # 跳過這個檔案，處理下一個
+            # 4. 防範無限迴圈
+            if resolved_file_path in self.processed_paths:
+                self.logger.warning(f"Skipping already processed file to prevent infinite loop: {resolved_file_path.name} (Path: {resolved_file_path})")
+                continue
 
-                    # 3b. 儲存原始檔案
-                    try:
-                        self.db_manager.store_raw_file(file_hash, raw_content)
-                        logger.info(f"已成功將檔案 '{file_path}' 的原始內容儲存到 raw_files (雜湊: {file_hash})。")
-                    except Exception as e: # 例如 IntegrityError 或其他 DB 錯誤
-                        logger.error(f"儲存檔案 '{file_path}' (雜湊: {file_hash}) 到 raw_files 時失敗: {e}")
-                        files_failed += 1
-                        # 如果 store_raw_file 失敗，我們可能不應該繼續 add_manifest_record
-                        continue
+            self.processed_paths.add(resolved_file_path)
 
-                    # 3c. 新增 manifest 記錄
-                    try:
-                        file_size = file_path.stat().st_size
-                        # original_path 可以是相對於 source_directory 的路徑，或絕對路徑
-                        # 這裡使用絕對路徑字串
-                        self.db_manager.add_manifest_record(
-                            file_hash=file_hash,
-                            original_path=str(file_path.resolve()), # 使用絕對路徑
-                            file_size_bytes=file_size,
-                            source_system="IngestionPipeline" # 可以根據需要設定來源系統
-                            # discovery_timestamp 和 last_modified_at_source 可以考慮加入
-                        )
-                        logger.info(f"已成功為檔案 '{file_path}' (雜湊: {file_hash}) 新增 manifest 記錄。")
-                        new_files_ingested += 1
-                    except Exception as e:
-                        logger.error(f"為檔案 '{file_path}' (雜湊: {file_hash}) 新增 manifest 記錄時失敗: {e}")
-                        files_failed += 1
-                        # 注意：此時 raw_file 可能已儲存，但 manifest 未記錄
-                        # 根據需求，可能需要一個補償機制或更複雜的交易管理
-                        # 但目前依照指示，僅記錄錯誤並繼續
-                        continue
+            # 5. 處理單一壓縮檔，並獲取新發現的巢狀壓縮檔列表
+            newly_found_zips = self._process_single_zip(resolved_file_path) # Pass resolved_file_path
 
-                except FileNotFoundError:
-                    # _calculate_sha256 可能會拋出，或者 rglob 後檔案被刪除
-                    logger.warning(f"處理檔案 '{file_path}' 時找不到檔案，可能已被移動或刪除。")
-                    files_failed +=1
-                except Exception as e:
-                    logger.error(f"處理檔案 '{file_path}' 時發生未預期錯誤: {e}", exc_info=True)
-                    files_failed += 1
-            elif file_path.is_dir():
-                logger.debug(f"掃描到目錄: {file_path} (跳過)。")
-            else:
-                logger.debug(f"掃描到一個非檔案非目錄的特殊路徑: {file_path} (跳過)。")
+            # 6. 將新任務加入佇列
+            if newly_found_zips:
+                # Resolve paths before adding to queue as well for consistency
+                resolved_newly_found_zips = [p.resolve() for p in newly_found_zips]
+                self.work_queue.extend(resolved_newly_found_zips)
+                self.logger.info(f"Added {len(resolved_newly_found_zips)} new nested archives to the processing queue.")
 
-
-        logger.info("--- 汲取管線執行摘要 ---")
-        logger.info(f"總共掃描檔案數: {total_files_scanned}")
-        logger.info(f"新汲取的檔案數: {new_files_ingested}")
-        logger.info(f"因已存在而跳過的檔案數: {files_skipped}")
-        logger.info(f"處理失敗的檔案數: {files_failed}")
-        logger.info("--- 汲取管線執行完畢 ---")
+        self.logger.info("Ingestion pipeline finished. All archives processed.")
