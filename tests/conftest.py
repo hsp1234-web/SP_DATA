@@ -1,6 +1,25 @@
-import pytest
+import sys
 from pathlib import Path
+import os
+import pytest
 import json
+
+# 將 src 目錄添加到 sys.path
+# __file__ 是 conftest.py 的路徑
+# .parent 是 tests/ 目錄
+# .parent.parent 是專案根目錄
+PROJECT_ROOT_FOR_PATH = Path(__file__).resolve().parent.parent
+SRC_PATH = PROJECT_ROOT_FOR_PATH / "src"
+
+if str(SRC_PATH) not in sys.path:
+    sys.path.insert(0, str(SRC_PATH))
+
+# 如果 MyTaifexDataProject/src 也是一個源碼根目錄，也需要加入
+# 根據先前 ls("src/") 的結果，taifex_pipeline 在頂層 src/ 下，所以下面的可能不需要
+# MY_TAIFEX_DATA_PROJECT_SRC_PATH = PROJECT_ROOT_FOR_PATH / "MyTaifexDataProject" / "src"
+# if os.path.isdir(MY_TAIFEX_DATA_PROJECT_SRC_PATH) and str(MY_TAIFEX_DATA_PROJECT_SRC_PATH) not in sys.path:
+#     sys.path.insert(0, str(MY_TAIFEX_DATA_PROJECT_SRC_PATH))
+
 import io
 import zipfile
 

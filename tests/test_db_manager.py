@@ -299,7 +299,7 @@ class TestDBManager:
         # 這裡我們主要關心 makedirs 的行為
         mocker.patch("os.path.exists", return_value=False) # 模擬目錄初始時不存在
 
-        with pytest.raises(OSError, match="權限不足 \(模擬\)"):
+        with pytest.raises(OSError, match=r"權限不足 \(模擬\)"): # 使用原始字串
             DBManager(db_path=str(db_file_in_failed_dir))
 
         mocked_makedirs.assert_called_once_with(str(db_dir_that_will_fail))
