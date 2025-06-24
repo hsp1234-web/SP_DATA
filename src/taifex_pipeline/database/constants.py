@@ -41,3 +41,38 @@ COLUMN_NOTES = "notes"
 # 表名稱常數
 TABLE_RAW_FILES = "raw_files"
 TABLE_FILE_MANIFEST = "file_manifest"
+
+# ==============================================================================
+# METADATA INDEX CONSTANTS
+# ==============================================================================
+
+CREATE_FILES_TABLE = """
+CREATE TABLE IF NOT EXISTS files (
+    file_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_name VARCHAR UNIQUE NOT NULL,
+    gdrive_path VARCHAR NOT NULL,
+    last_modified TIMESTAMP,
+    file_size_bytes BIGINT
+);
+"""
+
+CREATE_DATA_MAP_TABLE = """
+CREATE TABLE IF NOT EXISTS data_map (
+    symbol VARCHAR NOT NULL,
+    data_date DATE NOT NULL,
+    file_id INTEGER NOT NULL,
+    PRIMARY KEY (symbol, data_date),
+    FOREIGN KEY (file_id) REFERENCES files (file_id)
+);
+"""
+
+# 索引可以大幅加速查詢效能
+CREATE_DATA_MAP_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_data_map_date ON data_map (data_date);
+"""
+
+METADATA_TABLE_DEFINITIONS = {
+    "files": CREATE_FILES_TABLE,
+    "data_map": CREATE_DATA_MAP_TABLE,
+    "data_map_index": CREATE_DATA_MAP_INDEX,
+}
