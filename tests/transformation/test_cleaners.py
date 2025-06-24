@@ -239,9 +239,202 @@ class TestCleanDailyOHLC:
         assert_series_equal(cleaned_df['percent_change'], expected_percent_change, check_names=False)
         assert cleaned_df['percent_change'].dtype == 'float64'
 
-# TODO:
+
+# --- Test Cases for clean_institutional_investors ---
+
+class TestCleanInstitutionalInvestors:
+
+    def test_empty_df_inst(self):
+        """測試傳入空的 DataFrame 給 clean_institutional_investors。"""
+        empty_df = pd.DataFrame()
+        cleaned_df = clean_institutional_investors(empty_df.copy())
+        assert cleaned_df.empty
+        assert_frame_equal(cleaned_df, empty_df)
+
+    def test_renaming_and_basic_types_format1(self):
+        """
+        測試一種常見的三大法人格式 (例如，依商品分期貨)。
+        - 欄位重命名
+        - 日期轉換 (單日)
+        - 數值轉換 (口數、金額)
+        - 身份別標準化
+        """
+        data = {
+            '交易日期': ['2023/03/15', '2023/03/15'],
+            '商品代號': ['TXF', 'MTX'],
+            '身份別': ['自營商', '投信'],
+            '多方交易口數': ['1,000', '500'],
+            '空方交易金額': ['2,000,000', '-'], # 注意金額單位通常是千元
+            '多空交易口數淨額': ['-100', '50'],
+            '多方未平倉口數': ['5,000', '200']
+        }
+        df = pd.DataFrame(data)
+        cleaned_df = clean_institutional_investors(df.copy())
+
+        expected_cols = ['data_date', 'product_id', 'institution_type',
+                         'long_contracts_futures', 'short_amount_futures', # 假設這是期貨金額
+                         'net_contracts_futures', 'long_oi_contracts_futures']
+        for col in expected_cols:
+            assert col in cleaned_df.columns, f"預期欄位 '{col}' 缺失"
+
+        # 檢查類型
+        assert cleaned_df['data_date'].dtype == 'datetime64[ns]'
+        assert cleaned_df['long_contracts_futures'].dtype == 'float64' # pd.to_numeric 通常轉 float
+        assert cleaned_df['short_amount_futures'].dtype == 'float64'
+        assert cleaned_df['net_contracts_futures'].dtype == 'float64'
+        assert cleaned_df['long_oi_contracts_futures'].dtype == 'float64'
+
+        # 檢查值
+        assert cleaned_df['data_date'].iloc[0] == pd.Timestamp('2023-03-15')
+        assert cleaned_df['institution_type'].tolist() == ['Dealer', 'InvestmentTrust']
+        assert cleaned_df['long_contracts_futures'].tolist() == [1000.0, 500.0]
+        assert pd.isna(cleaned_df['short_amount_futures'].iloc[1]) # '-' 應轉為 NaN
+        assert cleaned_df['net_contracts_futures'].tolist() == [-100.0, 50.0]
+        assert len(cleaned_df) == 2 # 沒有行應被移除
+
+    def test_date_range_and_option_types_format2(self):
+        """
+        測試包含日期區間和選擇權買賣權的格式。
+        - 日期區間處理 (取結束日)
+        - 買賣權標準化
+        """
+        data = {
+            '統計日期': ['2023/03/06~2023/03/10', '2023/03/13~2023/03/17'],
+            '契約': ['TXO', 'TXO'],
+            '買賣權別': ['買權', '賣 權 '], # 包含空格
+            '身份別': ['外資及陸資', '自營商'],
+            '買方交易口數(買權)': ['100', ''], # 空字串應為 NaN
+            '賣方交易金額(賣權)': ['-500', '200']
+        }
+        df = pd.DataFrame(data)
+        cleaned_df = clean_institutional_investors(df.copy())
+
+        assert 'data_date' in cleaned_df.columns
+        assert 'option_type' in cleaned_df.columns
+        assert 'long_contracts_call' in cleaned_df.columns
+        assert 'short_amount_put' in cleaned_df.columns # 假設這是賣權的賣方金額
+
+        assert cleaned_df['data_date'].tolist() == [pd.Timestamp('2023-03-10'), pd.Timestamp('2023-03-17')]
+        assert cleaned_df['option_type'].tolist() == ['C', 'P']
+        assert cleaned_df['institution_type'].tolist() == ['ForeignAndMainlandInvestors', 'Dealer']
+        assert cleaned_df['long_contracts_call'].iloc[0] == 100.0
+        assert pd.isna(cleaned_df['long_contracts_call'].iloc[1]) # 空字串轉 NaN
+        assert cleaned_df['short_amount_put'].tolist() == [-500.0, 200.0]
+        assert len(cleaned_df) == 2
+
+    def test_missing_optional_numeric_fields(self):
+        """測試當一些數值欄位不存在時，函式仍能正常運作。"""
+        data = {
+            '日期': ['20230401'],
+            '商品代號': ['TE'],
+            '身份別': ['外資'],
+            # 故意缺少大部分的口數和金額欄位
+            '多方交易口數': ['100']
+        }
+        df = pd.DataFrame(data)
+        cleaned_df = clean_institutional_investors(df.copy())
+
+        assert len(cleaned_df) == 1
+        assert 'long_contracts_futures' in cleaned_df.columns
+        assert cleaned_df['long_contracts_futures'].iloc[0] == 100.0
+        # 檢查其他預期但不存在的數值欄位是否也沒有被錯誤地加入或導致錯誤
+        assert 'short_contracts_futures' not in cleaned_df.columns
+        assert 'long_amount_futures' not in cleaned_df.columns
+
+    def test_invalid_data_removal_inst(self):
+        """測試三大法人數據中，關鍵欄位為空時資料行被移除。"""
+        data = {
+            '交易日期': ['2023/05/01', None, '2023/05/03', '2023/05/04'],
+            '契約': ['TXFA3', 'TXFB3', None, 'TXFD3'],
+            '身份別': ['自營商', '投信', '外資', None], # institution_type 也設為 critical
+            '多方交易口數': ['100', '200', '300', '400']
+        }
+        df = pd.DataFrame(data)
+        cleaned_df = clean_institutional_investors(df.copy())
+
+        # 預期：
+        # 第1行: 有效
+        # 第2行: data_date is NaT -> 移除
+        # 第3行: product_id is None -> 移除 (如果 product_id 是 critical 且存在)
+        # 第4行: institution_type is None/NaN after map -> 移除 (如果 institution_type 是 critical)
+        # 假設 data_date, product_id, institution_type 都是 critical
+        assert len(cleaned_df) == 1
+        assert cleaned_df['data_date'].iloc[0] == pd.Timestamp('2023-05-01')
+        assert cleaned_df['product_id'].iloc[0] == 'TXFA3'
+        assert cleaned_df['institution_type'].iloc[0] == 'Dealer'
+
+    def test_institution_type_normalization_details(self):
+        """更詳細地測試 institution_type 的標準化。"""
+        data = {
+            '日期': ['20230101'] * 5,
+            '契約': ['A'] * 5,
+            '身份別': ['自營商', '投信', '外資', '外資及陸資', '外資及陸資(不含自營商)']
+        }
+        df = pd.DataFrame(data)
+        cleaned_df = clean_institutional_investors(df.copy())
+        expected_types = ['Dealer', 'InvestmentTrust', 'ForeignAndMainlandInvestors',
+                          'ForeignAndMainlandInvestors', 'ForeignAndMainlandInvestors']
+        assert cleaned_df['institution_type'].tolist() == expected_types
+
+    def test_unmapped_institution_type_and_option_type(self):
+        """測試當 institution_type 或 option_type 包含無法映射的值時的行為。"""
+        data = {
+            '日期': ['20230101', '20230101'],
+            '契約': ['A', 'B'],
+            '身份別': ['不明法人', '自營商'],
+            '買賣權': ['中立權', '買權']
+        }
+        df = pd.DataFrame(data)
+        cleaned_df = clean_institutional_investors(df.copy())
+
+        # '不明法人' 應保留原樣 (或變為 NaN/None，取決於 map_institution 的實現)
+        # '中立權' 應保留原樣
+        assert cleaned_df['institution_type'].tolist() == ['不明法人', 'Dealer']
+        assert cleaned_df['option_type'].tolist() == ['中立權', 'C'] # 假設 '中立權' 在 map 後保留
+
+    def test_combined_futures_options_columns(self):
+        """
+        測試一個 DataFrame 可能同時包含期貨和選擇權相關的欄位名稱。
+        例如，某些總表可能將這些混合在一起。
+        """
+        data = {
+            '日期': ['20230601'],
+            '契約': ['TXF'], # 假設是期貨契約，但數據可能來自一個混合報告
+            '身份別': ['自營商'],
+            '多方交易口數': ['100'], # 應映射到 long_contracts_futures
+            '買方交易口數(買權)': ['50'], # 應映射到 long_contracts_call
+            '賣方交易金額(賣權)': ['-2000'] # 應映射到 short_amount_put
+        }
+        df = pd.DataFrame(data)
+        cleaned_df = clean_institutional_investors(df.copy())
+
+        assert 'long_contracts_futures' in cleaned_df.columns
+        assert cleaned_df['long_contracts_futures'].iloc[0] == 100.0
+
+        assert 'long_contracts_call' in cleaned_df.columns
+        assert cleaned_df['long_contracts_call'].iloc[0] == 50.0
+
+        assert 'short_amount_put' in cleaned_df.columns
+        assert cleaned_df['short_amount_put'].iloc[0] == -2000.0
+
+        # 檢查其他不應存在的欄位 (例如，不應錯誤地將期貨的多方交易口數也填到選擇權欄位)
+        if 'long_contracts_put' in cleaned_df.columns: # 如果這個欄位被錯誤創建了
+            assert pd.isna(cleaned_df['long_contracts_put'].iloc[0])
+
+
+# TODO: (for clean_daily_ohlc)
 # - 測試更複雜的日期格式 (如果 pd.to_datetime 不能自動處理)
 # - 測試包含極端值或邊界值的數值轉換
 # - 測試當 COLUMN_MAP 非常大或 DataFrame 欄位非常多時的性能 (可能超出單元測試範圍)
 # - 測試不同種類的換行符或檔案編碼問題對欄位名提取的影響 (這更偏向 parser，但清洗前的 DataFrame 狀態可能受影響)
 # - 測試當關鍵欄位 (如 trading_date, product_id) 本身就是 object 類型但包含 np.nan 或 None 時 dropna 的行為
+
+# TODO: (for clean_institutional_investors)
+# - 針對「三大法人(依商品分)-期貨」、「三大法人(依商品分)-選擇權」、「三大法人(依買賣權分)-選擇權」等特定報告格式，
+#   建立更精準的模擬 DataFrame 和預期結果進行測試。
+# - 測試包含 "合計" 或 "總計" 的行是否被正確移除或處理 (目前是移除)。
+# - 測試當 institution_type 包含括號 (如 "自營商(自行買賣)") 時的處理。
+# - 測試金額欄位，如果原始數據中單位是「千元」，是否需要乘以 1000 (目前未處理)。
+# - 測試更複雜的日期區間格式，例如週報的 "W1", "W2" (目前未特別處理週數)。
+# - 測試 DataFrame 結構調整 (如 unpivot/melt) 的需求 (如果目標表是長格式)。
+# - 測試當所有數值欄位都為 '-' 或空時，是否全部正確轉為 NaN。

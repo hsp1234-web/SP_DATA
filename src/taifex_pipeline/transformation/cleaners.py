@@ -334,3 +334,335 @@ if __name__ == '__main__':
     assert pd.isna(cleaned_post_market['open'].iloc[0]), "'盤後' 應轉換為 NaN"
     assert cleaned_post_market['close'].iloc[0] == 17500.0
     logger.info("--- 包含 '盤後' DataFrame 測試結束 ---")
+
+
+def clean_institutional_investors(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    清洗並標準化三大法人交易資訊的 DataFrame。
+    此函式設計用於處理多種不同格式的三大法人報告。
+
+    Args:
+        df (pd.DataFrame): 從原始檔案解析出來的 DataFrame。
+
+    Returns:
+        pd.DataFrame: 清洗和標準化後的 DataFrame。
+    """
+    if df.empty:
+        logger.info("傳入的三大法人 DataFrame 為空，直接返回。")
+        return df
+
+    cleaned_df = df.copy()
+    logger.info(f"開始清洗三大法人數據，原始 DataFrame shape: {cleaned_df.shape}")
+
+    # 欄位對映字典 (持續擴充，包含各種三大法人報告的欄位)
+    # Key: 原始中文/非標準欄位名 (建議小寫以方便匹配，或在匹配時處理大小寫)
+    # Value: 標準英文欄位名
+    COLUMN_MAP_INST = {
+        # 通用欄位
+        '日期': 'data_date', # 或 '交易日期', '統計日期'
+        '交易日期': 'data_date',
+        '統計日期': 'data_date',
+        '商品名稱': 'product_name', # 例如 "臺股期貨"
+        '中文簡稱': 'product_name', # 有些檔案可能用此
+        '契約': 'product_id', # 例如 TXF
+        '商品代號': 'product_id',
+        '身份別': 'institution_type', # 自營商、投信、外資
+        '三大法人': 'institution_type', # 有些總表可能用此作為區分
+        '買賣權': 'option_type', # 買權/賣權 (選擇權相關報表)
+        '買賣權別': 'option_type',
+
+        # 期貨相關 (多空方) - 口數 (Contracts)
+        '多方交易口數': 'long_contracts_futures',
+        '空方交易口數': 'short_contracts_futures',
+        '多空交易口數淨額': 'net_contracts_futures',
+        '多方未平倉口數': 'long_oi_contracts_futures',
+        '空方未平倉口數': 'short_oi_contracts_futures',
+        '多空未平倉口數淨額': 'net_oi_contracts_futures',
+
+        # 期貨相關 (多空方) - 金額 (Amount)
+        '多方交易金額': 'long_amount_futures', # 單位通常是千元
+        '空方交易金額': 'short_amount_futures',
+        '多空交易金額淨額': 'net_amount_futures',
+        '多方未平倉金額': 'long_oi_amount_futures',
+        '空方未平倉金額': 'short_oi_amount_futures',
+        '多空未平倉金額淨額': 'net_oi_amount_futures',
+
+        # 選擇權相關 - 買權 (Call) - 口數
+        '買方交易口數(買權)': 'long_contracts_call', # 或 '買權買方交易口數'
+        '賣方交易口數(買權)': 'short_contracts_call',# 或 '買權賣方交易口數'
+        '買賣方交易口數淨額(買權)': 'net_contracts_call',
+        '買方未平倉口數(買權)': 'long_oi_contracts_call',
+        '賣方未平倉口數(買權)': 'short_oi_contracts_call',
+        '買賣方未平倉口數淨額(買權)': 'net_oi_contracts_call',
+
+        # 選擇權相關 - 買權 (Call) - 金額
+        '買方交易金額(買權)': 'long_amount_call',
+        '賣方交易金額(買權)': 'short_amount_call',
+        '買賣方交易金額淨額(買權)': 'net_amount_call',
+        '買方未平倉金額(買權)': 'long_oi_amount_call',
+        '賣方未平倉金額(買權)': 'short_oi_amount_call',
+        '買賣方未平倉金額淨額(買權)': 'net_oi_amount_call',
+
+        # 選擇權相關 - 賣權 (Put) - 口數
+        '買方交易口數(賣權)': 'long_contracts_put',
+        '賣方交易口數(賣權)': 'short_contracts_put',
+        '買賣方交易口數淨額(賣權)': 'net_contracts_put',
+        '買方未平倉口數(賣權)': 'long_oi_contracts_put',
+        '賣方未平倉口數(賣權)': 'short_oi_contracts_put',
+        '買賣方未平倉口數淨額(賣權)': 'net_oi_contracts_put',
+
+        # 選擇權相關 - 賣權 (Put) - 金額
+        '買方交易金額(賣權)': 'long_amount_put',
+        '賣方交易金額(賣權)': 'short_amount_put',
+        '買賣方交易金額淨額(賣權)': 'net_amount_put',
+        '買方未平倉金額(賣權)': 'long_oi_amount_put',
+        '賣方未平倉金額(賣權)': 'short_oi_amount_put',
+        '買賣方未平倉金額淨額(賣權)': 'net_oi_amount_put',
+
+        # 總計欄位 (可能出現在某些合併報告中)
+        '合計多方交易口數': 'total_long_contracts',
+        '合計空方交易口數': 'total_short_contracts',
+        '合計多空淨額口數': 'total_net_contracts',
+        '合計多方交易金額': 'total_long_amount',
+        '合計空方交易金額': 'total_short_amount',
+        '合計多空淨額金額': 'total_net_amount',
+        # ... 還有更多未平倉的總計 ...
+
+        # 針對「依商品分-三大法人買賣權未平倉契約分計」的特殊欄位
+        # 例如："自營商(自行買賣)_買權_未平倉契約量" 這種組合欄位
+        # 這類欄位可能需要在重命名前先進行拆分或在 mapping 中使用更複雜的 key
+        # 暫時先不處理這種極端複雜的組合欄位，而是假設它們會被拆分成更基礎的欄位
+        # 或者，我們可以針對這類報表在 parser 層面就進行初步的 melt/pivot。
+        # 目前的 COLUMN_MAP_INST 假設欄位名是比較直接的。
+    }
+
+    # 欄位重命名 (與 clean_daily_ohlc 類似的邏輯)
+    lower_case_column_map_inst = {k.lower().replace(' ', '').replace('(', '').replace(')', ''): v
+                                  for k, v in COLUMN_MAP_INST.items()}
+
+    rename_dict_inst = {}
+    original_cols = list(cleaned_df.columns) # 複製一份原始欄位名列表
+
+    for col in original_cols:
+        col_std = col.strip().lower().replace(' ', '').replace('(', '').replace(')', '') # 標準化原始欄位名以供查找
+        if col_std in lower_case_column_map_inst:
+            rename_dict_inst[col] = lower_case_column_map_inst[col_std]
+
+    if rename_dict_inst:
+        cleaned_df.rename(columns=rename_dict_inst, inplace=True)
+        logger.info(f"三大法人欄位已重命名: {rename_dict_inst}")
+    else:
+        logger.info("三大法人沒有欄位需要重命名 (根據目前的 COLUMN_MAP_INST)。")
+
+    # --- 後續清洗步驟將在此處添加 ---
+    # 1. 日期處理 (data_date)
+    if 'data_date' in cleaned_df.columns:
+        logger.debug("開始處理 'data_date' 欄位...")
+
+        def parse_date_value(date_val):
+            if pd.isna(date_val):
+                return pd.NaT
+
+            date_str = str(date_val).strip()
+
+            # 檢查是否為日期區間 (例如 YYYY/MM/DD~YYYY/MM/DD 或 YYYYMMDD~YYYYMMDD)
+            if '~' in date_str:
+                date_str = date_str.split('~')[-1].strip() # 取結束日期
+
+            # 移除 "年", "月", "日" 並替換為 "-"
+            if '年' in date_str or '月' in date_str or '日' in date_str:
+                date_str = date_str.replace('年', '-').replace('月', '-').replace('日', '')
+
+            # 嘗試轉換為 datetime 物件
+            # pd.to_datetime 會嘗試多種格式，但如果格式非常固定，可以指定 format
+            # 考慮格式如: YYYY-MM-DD, YYYY/MM/DD, YYYYMMDD
+            # 移除所有非數字和非 '-' '/' 的字元，以簡化後續轉換
+            # date_str = ''.join(filter(lambda x: x.isdigit() or x in ['-', '/'], date_str))
+
+            try:
+                # 先嘗試標準格式
+                dt_obj = pd.to_datetime(date_str, errors='raise')
+                return dt_obj
+            except (ValueError, TypeError):
+                # 如果標準轉換失敗，嘗試去除分隔符的 YYYYMMDD 格式
+                try:
+                    cleaned_date_str = ''.join(filter(str.isdigit, date_str))
+                    if len(cleaned_date_str) == 8: # YYYYMMDD
+                        dt_obj = pd.to_datetime(cleaned_date_str, format='%Y%m%d', errors='raise')
+                        return dt_obj
+                    elif len(cleaned_date_str) == 7 and cleaned_date_str.startswith('1'): #可能是民國年 YYYMMDD
+                        roc_year = int(cleaned_date_str[:3])
+                        # 檢查是否真的是民國年 (例如，100-120 之間的可能是)
+                        # 簡單假設小於 150 的三位數年份是民國年
+                        if 90 < roc_year < 150 : # 假設民國90年到149年
+                             gregorian_year = roc_year + 1911
+                             dt_obj = pd.to_datetime(f"{gregorian_year}{cleaned_date_str[3:]}", format='%Y%m%d', errors='raise')
+                             return dt_obj
+                except (ValueError, TypeError):
+                    logger.warning(f"無法將日期字串 '{date_val}' (處理後為 '{date_str}') 轉換為日期。將設為 NaT。")
+                    return pd.NaT
+            logger.warning(f"無法將日期字串 '{date_val}' (處理後為 '{date_str}') 轉換為日期。將設為 NaT。")
+            return pd.NaT
+
+        cleaned_df['data_date'] = cleaned_df['data_date'].apply(parse_date_value)
+
+        # 再次確保是 datetime64[ns] 類型，以防 apply 返回的是 object 類型 (如果都是 NaT)
+        if not pd.api.types.is_datetime64_any_dtype(cleaned_df['data_date']):
+             cleaned_df['data_date'] = pd.to_datetime(cleaned_df['data_date'], errors='coerce')
+
+        logger.info(f"'data_date' 欄位處理完成。NaT 數量: {cleaned_df['data_date'].isna().sum()}")
+    else:
+        logger.warning("'data_date' 欄位不存在於 DataFrame 中，無法處理日期。")
+
+
+    # 2. 數值轉換 (口數、金額)
+    #   定義可能出現的口數和金額欄位 (使用標準化後的名稱)
+    #   這些欄位通常代表數量或貨幣值，應為數值型。
+    NUMERIC_COLS_INST = [
+        # 期貨 Contracts
+        'long_contracts_futures', 'short_contracts_futures', 'net_contracts_futures',
+        'long_oi_contracts_futures', 'short_oi_contracts_futures', 'net_oi_contracts_futures',
+        # 期貨 Amount
+        'long_amount_futures', 'short_amount_futures', 'net_amount_futures',
+        'long_oi_amount_futures', 'short_oi_amount_futures', 'net_oi_amount_futures',
+        # 選擇權 Call Contracts
+        'long_contracts_call', 'short_contracts_call', 'net_contracts_call',
+        'long_oi_contracts_call', 'short_oi_contracts_call', 'net_oi_contracts_call',
+        # 選擇權 Call Amount
+        'long_amount_call', 'short_amount_call', 'net_amount_call',
+        'long_oi_amount_call', 'short_oi_amount_call', 'net_oi_amount_call',
+        # 選擇權 Put Contracts
+        'long_contracts_put', 'short_contracts_put', 'net_contracts_put',
+        'long_oi_contracts_put', 'short_oi_contracts_put', 'net_oi_contracts_put',
+        # 選擇權 Put Amount
+        'long_amount_put', 'short_amount_put', 'net_amount_put',
+        'long_oi_amount_put', 'short_oi_amount_put', 'net_oi_amount_put',
+        # 總計 (如果有的話)
+        'total_long_contracts', 'total_short_contracts', 'total_net_contracts',
+        'total_long_amount', 'total_short_amount', 'total_net_amount',
+        # ... 其他可能的總計欄位 ...
+    ]
+
+    for col in NUMERIC_COLS_INST:
+        if col in cleaned_df.columns:
+            logger.debug(f"嘗試轉換三大法人數值欄位 '{col}'...")
+            # 1. 轉換為字串以使用 .str accessor
+            cleaned_df[col] = cleaned_df[col].astype(str)
+            # 2. 移除千分位逗號 (,)
+            cleaned_df[col] = cleaned_df[col].str.replace(',', '', regex=False)
+            # 3. 將 '-' (或其他代表 NaN 的字元) 替換為 np.nan
+            cleaned_df[col] = cleaned_df[col].replace({'-': np.nan, 'N/A': np.nan, 'NaN': np.nan, ' ': np.nan, '':np.nan})
+            # 4. 轉換為數值，無法轉換的設為 NaN
+            cleaned_df[col] = pd.to_numeric(cleaned_df[col], errors='coerce')
+            logger.debug(f"三大法人數值欄位 '{col}' 轉換後 dtype: {cleaned_df[col].dtype}, "
+                         f"NaN 數量: {cleaned_df[col].isna().sum()}")
+        else:
+            logger.debug(f"三大法人數值目標欄位 '{col}' 不存在於 DataFrame 中，跳過。")
+
+    # 3. 內容標準化
+    # 3a. institution_type (身份別/三大法人)
+    if 'institution_type' in cleaned_df.columns:
+        logger.debug("標準化 'institution_type' 欄位...")
+        # 移除可能的「合計」或「總計」行，這些通常不是我們要的機構類型數據
+        # 這些行可能在解析時就應該被過濾，但這裡再做一次保險
+        cleaned_df = cleaned_df[~cleaned_df['institution_type'].astype(str).str.contains('合計|總計', na=False)]
+
+        institution_map = {
+            '自營商': 'Dealer',
+            '投信': 'InvestmentTrust',
+            '外資及陸資': 'ForeignAndMainlandInvestors', # 確保與DB定義一致
+            '外資': 'ForeignAndMainlandInvestors', # 有時可能簡寫
+            '全部': 'AllInvestors', # 有些報告可能會有 "全部" 或 "合計" 代表所有法人加總
+                                  # 但這通常與個別機構類型數據的目標表結構不同
+                                  # 我們可能需要決定是否保留這類匯總行，或如何處理
+                                  # 目前假設如果 institution_type 是 '全部'，我們會保留並映射
+        }
+        # 先轉為字串，去空白，然後用 map
+        cleaned_df['institution_type'] = cleaned_df['institution_type'].astype(str).str.strip()
+
+        # 為了處理 "外資及陸資" vs "外資" 的情況，可以先替換長的，再替換短的，或者使用更精確的匹配
+        # 或者，在原始欄位名重命名時就處理這種多樣性
+        # 這裡我們用 replace，它會按順序替換
+        # cleaned_df['institution_type'] = cleaned_df['institution_type'].replace(institution_map)
+        # 使用 map 可能更好，對於不在 map 中的值設為 None/NaN 或保留原樣，取決於需求
+
+        # 為了更穩健，對 institution_map 的 key 也做標準化 (例如移除括號)
+        # 但這裡假設 map 的 key 已經是比較乾淨的
+
+        # 使用 apply 來處理更複雜的匹配，例如部分匹配或大小寫不敏感
+        def map_institution(val):
+            val_str = str(val).strip()
+            # 完全匹配優先
+            if val_str in institution_map:
+                return institution_map[val_str]
+            # 針對 "外資及陸資" vs "外資"
+            if "外資及陸資" in val_str: # 處理 "外資及陸資(不含自營商)" 等情況
+                return institution_map.get("外資及陸資", val_str) # 如果 "外資及陸資" 在map中
+            if "外資" in val_str:
+                 return institution_map.get("外資", val_str) # 如果 "外資" 在map中
+            if "自營商" in val_str: # 處理 "自營商(自行買賣)" vs "自營商(避險)"
+                return institution_map.get("自營商", val_str)
+            if "投信" in val_str:
+                return institution_map.get("投信", val_str)
+            return val_str # 如果沒有匹配，返回原值 (或設為 None/NaN)
+
+        cleaned_df['institution_type'] = cleaned_df['institution_type'].apply(map_institution)
+
+        # 檢查是否有未被 map 的值 (除了已知的 'AllInvestors' 等)
+        known_mapped_values = list(institution_map.values())
+        unmapped_inst_types = cleaned_df[~cleaned_df['institution_type'].isin(known_mapped_values)]['institution_type'].unique()
+        if len(unmapped_inst_types) > 0:
+            logger.warning(f"'institution_type' 中發現未成功映射的值: {unmapped_inst_types}")
+        logger.info("'institution_type' 欄位標準化完成。")
+
+    # 3b. option_type (買賣權)
+    if 'option_type' in cleaned_df.columns:
+        logger.debug("標準化 'option_type' 欄位...")
+        option_type_map_inst = {
+            '買權': 'C',
+            '賣權': 'P',
+            'CALL': 'C',
+            'PUT': 'P',
+        }
+        cleaned_df['option_type'] = cleaned_df['option_type'].astype(str).str.strip().str.upper()
+        # 如果原始欄位可能是 "買 權" (中間有空格)，上面的 strip().upper() 無法處理
+        # 需要先 .str.replace(' ', '')
+        cleaned_df['option_type'] = cleaned_df['option_type'].str.replace(' ', '', regex=False)
+        cleaned_df['option_type'] = cleaned_df['option_type'].replace(option_type_map_inst)
+
+        unmapped_option_types = cleaned_df[~cleaned_df['option_type'].isin(['C', 'P']) & cleaned_df['option_type'].notna() & (cleaned_df['option_type'] != '')]['option_type'].unique()
+        if len(unmapped_option_types) > 0:
+            logger.warning(f"'option_type' 中發現未成功映射到 'C' 或 'P' 的值: {unmapped_option_types}")
+        logger.info("'option_type' 欄位標準化完成。")
+
+
+    # 4. 移除無效數據
+    #   關鍵欄位：data_date 是必須的。product_id 和 institution_type 也通常是。
+    #   如果 product_id 或 institution_type 在某些報告中確實可以為空，則從 subset 中移除。
+    critical_cols_inst = ['data_date']
+    if 'product_id' in cleaned_df.columns:
+        critical_cols_inst.append('product_id')
+    if 'institution_type' in cleaned_df.columns:
+        # 檢查 institution_type 是否都是有效映射後的值，或者允許部分原值通過
+        # 如果 institution_type 映射後可能產生 NaN 或空字串，dropna 會處理
+        # 如果我們只接受 institution_map.values() 中的值：
+        # cleaned_df = cleaned_df[cleaned_df['institution_type'].isin(list(institution_map.values()))]
+        # 但這樣太嚴格，因為 institution_map 可能不完整。
+        # dropna 會處理 institution_type 欄位本身是 NaN 的情況。
+        critical_cols_inst.append('institution_type')
+
+    original_rows_inst = len(cleaned_df)
+    # 在 dropna 之前，確保 critical_cols_inst 中的欄位都實際存在於 cleaned_df 中
+    existing_critical_cols_inst = [col for col in critical_cols_inst if col in cleaned_df.columns]
+
+    if existing_critical_cols_inst:
+        cleaned_df.dropna(subset=existing_critical_cols_inst, how='any', inplace=True)
+        rows_dropped_inst = original_rows_inst - len(cleaned_df)
+        if rows_dropped_inst > 0:
+            logger.info(f"移除了 {rows_dropped_inst} 行在三大法人關鍵欄位 ({existing_critical_cols_inst}) 中包含 NaN 的數據。")
+    else:
+        logger.warning("沒有可用的三大法人關鍵欄位進行 dropna 操作。")
+
+
+    logger.info(f"三大法人數據清洗完成。處理後 DataFrame shape: {cleaned_df.shape}")
+    return cleaned_df
