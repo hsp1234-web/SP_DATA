@@ -271,8 +271,54 @@ def prefill_dim_financial_metric(con: duckdb.DuckDBPyConnection):
         {
             "source_name": "finmind", "source_metric_name": "本期現金及約當現金增加(減少)數", # Verify actual FinMind name
             "canonical_metric_name": "net_change_in_cash_and_cash_equivalents", "metric_description": "Net change in cash and cash equivalents"
+        },
+        # Chip Data - Institutional Investors (examples, assuming transform_chip_data_to_canonical will use these as metric_name)
+        # These are illustrative; the actual metric_names will depend on the melt logic in transform_chip_data_to_canonical
+        {
+            "source_name": "finmind", "source_metric_name": "Foreign_Investor_buy_shares", # This would be a generated metric_name after melt
+            "canonical_metric_name": "institutional_foreign_investor_buy_shares", "metric_description": "Foreign Investor Buy Shares"
+        },
+        {
+            "source_name": "finmind", "source_metric_name": "Foreign_Investor_sell_shares",
+            "canonical_metric_name": "institutional_foreign_investor_sell_shares", "metric_description": "Foreign Investor Sell Shares"
+        },
+        {
+            "source_name": "finmind", "source_metric_name": "Foreign_Investor_net_shares",
+            "canonical_metric_name": "institutional_foreign_investor_net_shares", "metric_description": "Foreign Investor Net Buy/Sell Shares"
+        },
+         # Similar entries for Investment_Trust, Dealer_Proprietary, Dealer_Hedging for buy, sell, net_shares
+
+        # Chip Data - Margin Trading (examples)
+        {
+            "source_name": "finmind", "source_metric_name": "margin_purchase_balance", # Assuming transform converts original to this
+            "canonical_metric_name": "margin_purchase_balance_shares", "metric_description": "Margin Purchase Balance (Shares)"
+        },
+        {
+            "source_name": "finmind", "source_metric_name": "short_sale_balance", # Assuming transform converts original to this
+            "canonical_metric_name": "short_sale_balance_shares", "metric_description": "Short Sale Balance (Shares)"
+        },
+
+        # Chip Data - Shareholding (examples)
+        {
+            "source_name": "finmind", "source_metric_name": "foreign_investment_shares_ratio", # Assuming transform converts original to this
+            "canonical_metric_name": "foreign_ownership_ratio", "metric_description": "Foreign Investment Ownership Ratio (%)"
+        },
+
+        # Event Data - Monthly Revenue
+        {
+            "source_name": "finmind", "source_metric_name": "monthly_revenue", # Assuming 'revenue' column from API is mapped to this in transform
+            "canonical_metric_name": "monthly_revenue_twd", "metric_description": "Monthly Revenue (TWD)"
+        },
+        # Event Data - Dividends (examples)
+        {
+            "source_name": "finmind", "source_metric_name": "cash_earnings_distribution", # Assuming transform maps original to this
+            "canonical_metric_name": "cash_dividend_per_share_from_earnings", "metric_description": "Cash Dividend Per Share from Earnings (TWD)"
+        },
+        {
+            "source_name": "finmind", "source_metric_name": "stock_earnings_distribution", # Assuming transform maps original to this
+            "canonical_metric_name": "stock_dividend_ratio_from_earnings", "metric_description": "Stock Dividend Ratio from Earnings (%)"
         }
-        # TODO: Add more metrics as new statements/sources are added
+        # TODO: Add more specific mappings as transform logic for chip and event data is finalized
     ]
 
     now_utc = datetime.now(timezone.utc)

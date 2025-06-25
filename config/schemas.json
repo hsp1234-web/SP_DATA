@@ -138,7 +138,7 @@
       { "name": "transaction_date", "type": "DATE", "constraints": "NOT NULL", "description": "交易日期或數據對應日期" },
       { "name": "security_id", "type": "VARCHAR", "constraints": "NOT NULL", "description": "股票代碼" },
       { "name": "metric_name", "type": "VARCHAR", "constraints": "NOT NULL", "description": "籌碼指標的標準化名稱" },
-      { "name": "metric_sub_category", "type": "VARCHAR", "constraints": "NOT NULL DEFAULT ''", "description": "指標子類別 (例如三大法人中的外資、投信、自營商，或融資融券的券商等)，無子類別時為空字串" },
+      { "name": "metric_sub_category", "type": "VARCHAR", "constraints": "NOT NULL DEFAULT ''", "description": "指標子類別 (例如三大法人中的外資、投信、自營商)，無子類別時為空字串" },
       { "name": "metric_value", "type": "DOUBLE", "description": "指標數值" },
       { "name": "source_api", "type": "VARCHAR", "constraints": "NOT NULL", "description": "數據來源 API (固定為 finmind)" },
       { "name": "last_updated_in_db_timestamp", "type": "TIMESTAMP WITH TIME ZONE", "constraints": "NOT NULL", "description": "記錄在數據庫中最後插入或更新的 UTC 時間戳" }
@@ -147,6 +147,24 @@
     "indexes": [
       {"name": "idx_ftcd_security_date", "columns": ["security_id", "transaction_date"]},
       {"name": "idx_ftcd_metric_subcat_date", "columns": ["metric_name", "metric_sub_category", "transaction_date"]}
+    ]
+  },
+  "fact_tw_event_data": {
+    "description": "台灣市場事件與營運數據表 (適用於 DuckDB)，例如除權除息、月營收。",
+    "columns": [
+        { "name": "event_date", "type": "DATE", "constraints": "NOT NULL", "description": "事件日期或數據對應月份的日期" },
+        { "name": "security_id", "type": "VARCHAR", "constraints": "NOT NULL", "description": "股票代碼" },
+        { "name": "event_type", "type": "VARCHAR", "constraints": "NOT NULL", "description": "事件類型 (例如 'monthly_revenue', 'cash_dividend', 'stock_dividend')" },
+        { "name": "metric_name", "type": "VARCHAR", "constraints": "NOT NULL", "description": "指標的標準化名稱" },
+        { "name": "metric_value_numeric", "type": "DOUBLE", "description": "指標的數值 (如果適用)" },
+        { "name": "metric_value_text", "type": "VARCHAR", "description": "指標的文本值 (如果適用)" },
+        { "name": "currency", "type": "VARCHAR", "description": "貨幣單位 (例如 'TWD', 如果適用)" },
+        { "name": "source_api", "type": "VARCHAR", "constraints": "NOT NULL", "description": "數據來源 API (例如 'finmind')" },
+        { "name": "last_updated_in_db_timestamp", "type": "TIMESTAMP WITH TIME ZONE", "constraints": "NOT NULL", "description": "記錄在數據庫中最後插入或更新的 UTC 時間戳" }
+    ],
+    "primary_keys": ["event_date", "security_id", "event_type", "metric_name", "source_api"],
+    "indexes": [
+        {"name": "idx_fted_security_event_date", "columns": ["security_id", "event_date", "event_type"]}
     ]
   }
 }

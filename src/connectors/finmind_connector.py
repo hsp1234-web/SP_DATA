@@ -514,7 +514,7 @@ class FinMindConnector(BaseConnector):
         fetch_params = {'stock_id': stock_id, 'start_date': start_date}
 
         raw_df = self._fetch_data_internal(
-            api_method_name='taiwan_stock_cash_flows_statement', # Correct API method name
+            api_method_name='taiwan_stock_cash_flows_statement',
             **fetch_params
         )
 
