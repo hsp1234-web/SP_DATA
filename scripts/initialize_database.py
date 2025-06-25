@@ -9,394 +9,307 @@ import re # For robust default value parsing
 
 # 配置日誌
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("initialize_database")
+logger = logging.getLogger("initialize_database_v2") # Changed logger name for clarity
 
-# 數據類型映射 (可以根據需要擴展)
-# schemas.json type -> DuckDB SQL type
-TYPE_MAPPING = {
-    "VARCHAR": "VARCHAR", # TEXT is an alias for VARCHAR in DuckDB
-    "TEXT": "VARCHAR",
-    "REAL": "DOUBLE",
-    "DOUBLE": "DOUBLE",
-    "DATE": "DATE",
-    "DATETIME": "TIMESTAMP WITH TIME ZONE", # TIMESTAMPTZ
-    "TIMESTAMP WITH TIME ZONE": "TIMESTAMP WITH TIME ZONE",
-    "INTEGER": "BIGINT",
-    "BIGINT": "BIGINT",
-    "JSON": "JSON",
-    "UUID": "UUID",
-    "BOOLEAN": "BOOLEAN"
-    # Add other types as needed
-}
+# --- SQL DDL 定義 ---
 
-def load_config(config_path: Path) -> Dict[str, Any]:
-    """加載 YAML 配置文件。"""
-    try:
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config_data = yaml.safe_load(f)
-        logger.info(f"成功從 {config_path} 加載配置。")
-        return config_data
-    except FileNotFoundError:
-        logger.error(f"配置文件 {config_path} 未找到。")
-        raise
-    except yaml.YAMLError as e:
-        logger.error(f"解析配置文件 {config_path} 時出錯: {e}")
-        raise
+SQL_DDL_FINANCIAL_DATA = """
+CREATE SEQUENCE IF NOT EXISTS dim_security_internal_id_seq START 1;
 
-def load_schemas(schemas_path: Path) -> Dict[str, Any]:
-    """加載 JSON schema 文件。"""
-    try:
-        with open(schemas_path, 'r', encoding='utf-8') as f:
-            schemas_data = json.load(f)
-        logger.info(f"成功從 {schemas_path} 加載 schema。")
-        return schemas_data
-    except FileNotFoundError:
-        logger.error(f"Schema 文件 {schemas_path} 未找到。")
-        raise
-    except json.JSONDecodeError as e:
-        logger.error(f"解析 schema 文件 {schemas_path} 時出錯: {e}")
-        raise
+CREATE TABLE IF NOT EXISTS dim_security (
+    internal_id BIGINT PRIMARY KEY DEFAULT nextval('dim_security_internal_id_seq'),
+    security_id VARCHAR UNIQUE NOT NULL,
+    name VARCHAR,
+    asset_class VARCHAR,
+    exchange VARCHAR,
+    currency VARCHAR,
+    country VARCHAR,
+    sector VARCHAR,
+    industry VARCHAR,
+    description TEXT,
+    first_seen_date DATE,
+    last_seen_date DATE,
+    delisted_date DATE,
+    source_api_info JSON,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT current_timestamp,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT current_timestamp
+);
+CREATE INDEX IF NOT EXISTS idx_dim_security_security_id ON dim_security(security_id);
+CREATE INDEX IF NOT EXISTS idx_dim_security_asset_class ON dim_security(asset_class);
 
-def build_create_table_sql(table_name: str, table_schema: Dict[str, Any]) -> str:
-    """根據 schema 構建 CREATE TABLE SQL 語句。"""
-    columns_sql_parts = []
-    for col_def in table_schema.get("columns", []):
-        col_name = f'"{col_def["name"]}"'
-        col_type_key = col_def["type"].upper()
-        col_type_sql = TYPE_MAPPING.get(col_type_key, "VARCHAR")
+CREATE TABLE IF NOT EXISTS fact_stock_price (
+    price_date DATE NOT NULL,
+    security_id VARCHAR NOT NULL,
+    open_price DOUBLE,
+    high_price DOUBLE,
+    low_price DOUBLE,
+    close_price DOUBLE,
+    adj_close_price DOUBLE,
+    volume BIGINT,
+    turnover DOUBLE,
+    dividends DOUBLE DEFAULT 0.0,
+    stock_splits DOUBLE DEFAULT 1.0,
+    vwap DOUBLE,
+    transactions INTEGER,
+    source_api VARCHAR NOT NULL,
+    data_snapshot_timestamp TIMESTAMP WITH TIME ZONE DEFAULT current_timestamp,
+    PRIMARY KEY (price_date, security_id)
+);
+CREATE INDEX IF NOT EXISTS idx_fact_stock_price_security_id_date ON fact_stock_price(security_id, price_date DESC);
 
-        col_sql_part = f"{col_name} {col_type_sql}"
+CREATE TABLE IF NOT EXISTS dim_financial_metric (
+    source_api VARCHAR NOT NULL,
+    source_metric_name VARCHAR NOT NULL,
+    canonical_metric_name VARCHAR NOT NULL,
+    metric_description TEXT,
+    metric_unit VARCHAR,
+    statement_type_hint VARCHAR,
+    is_growth_metric BOOLEAN DEFAULT FALSE,
+    -- last_updated_in_db_timestamp: Added for consistency in prefill function
+    last_updated_in_db_timestamp TIMESTAMP WITH TIME ZONE DEFAULT current_timestamp,
+    PRIMARY KEY (source_api, source_metric_name),
+    UNIQUE (canonical_metric_name)
+);
+CREATE INDEX IF NOT EXISTS idx_dim_financial_metric_canonical_name ON dim_financial_metric(canonical_metric_name);
 
-        constraints_value = col_def.get("constraints", "")
+CREATE TABLE IF NOT EXISTS fact_financial_statement (
+    security_id VARCHAR NOT NULL,
+    fiscal_period VARCHAR NOT NULL,
+    announcement_date DATE NOT NULL,
+    metric_name VARCHAR NOT NULL,
+    metric_value DOUBLE,
+    currency VARCHAR,
+    report_date DATE NOT NULL,
+    filing_date DATE,
+    statement_type VARCHAR,
+    source_api VARCHAR NOT NULL,
+    data_snapshot_timestamp TIMESTAMP WITH TIME ZONE DEFAULT current_timestamp,
+    PRIMARY KEY (security_id, fiscal_period, announcement_date, metric_name)
+);
+CREATE INDEX IF NOT EXISTS idx_fact_financial_statement_sec_period_ann_metric ON fact_financial_statement(security_id, fiscal_period, announcement_date, metric_name);
+CREATE INDEX IF NOT EXISTS idx_fact_financial_statement_sec_metric_ann ON fact_financial_statement(security_id, metric_name, announcement_date DESC);
 
-        # Handle DEFAULT constraint
-        if "DEFAULT" in constraints_value.upper():
-            # Regex to find DEFAULT value, handling simple numbers and quoted strings
-            # This regex assumes default value is the first part after "DEFAULT " and before any other constraint like "NOT NULL"
-            match = re.search(r"DEFAULT\s+((?:'(?:[^']|'')*'|[^'\s]+))", constraints_value, re.IGNORECASE)
-            if match:
-                actual_default_value = match.group(1)
-                col_sql_part += f" DEFAULT {actual_default_value}"
+CREATE TABLE IF NOT EXISTS fact_macro_economic_data (
+    metric_date DATE NOT NULL,
+    metric_name VARCHAR NOT NULL,
+    metric_value DOUBLE,
+    frequency VARCHAR,
+    unit VARCHAR,
+    notes TEXT,
+    source_api VARCHAR NOT NULL,
+    data_snapshot_timestamp TIMESTAMP WITH TIME ZONE DEFAULT current_timestamp,
+    PRIMARY KEY (metric_date, metric_name)
+);
+CREATE INDEX IF NOT EXISTS idx_fact_macro_metric_name_date ON fact_macro_economic_data(metric_name, metric_date DESC);
 
-        # Handle NOT NULL constraint
-        if "NOT NULL" in constraints_value.upper():
-            col_sql_part += " NOT NULL"
+CREATE TABLE IF NOT EXISTS fact_alternative_data (
+    data_timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+    security_id VARCHAR,
+    factor_name VARCHAR NOT NULL,
+    factor_value_numeric DOUBLE,
+    factor_value_text TEXT,
+    factor_value_json JSON,
+    source_calculation_id VARCHAR,
+    data_snapshot_timestamp TIMESTAMP WITH TIME ZONE DEFAULT current_timestamp,
+    PRIMARY KEY (data_timestamp, security_id, factor_name)
+);
+CREATE INDEX IF NOT EXISTS idx_fact_alt_data_sec_factor_time ON fact_alternative_data(security_id, factor_name, data_timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_fact_alt_data_factor_time ON fact_alternative_data(factor_name, data_timestamp DESC);
+"""
 
-        columns_sql_parts.append(col_sql_part)
+SQL_DDL_AI_JUDGMENTS = """
+CREATE TABLE IF NOT EXISTS ai_simulation_log (
+    simulation_timestamp TIMESTAMP WITH TIME ZONE PRIMARY KEY,
+    market_briefing TEXT NOT NULL,
+    ai_model_used VARCHAR NOT NULL,
+    prompt_details TEXT,
+    ai_raw_response TEXT,
+    extracted_strategy JSON,
+    extracted_factors JSON,
+    processing_time_seconds DOUBLE,
+    backtest_result_summary JSON
+);
+CREATE INDEX IF NOT EXISTS idx_ai_simulation_log_model_time ON ai_simulation_log(ai_model_used, simulation_timestamp DESC);
+"""
 
-    # 主鍵約束
-    primary_keys = table_schema.get("primary_keys", [])
-    if primary_keys:
-        pk_cols = ', '.join([f'"{pk}"' for pk in primary_keys])
-        columns_sql_parts.append(f"PRIMARY KEY ({pk_cols})")
+# Default paths (can be overridden by config.yaml in a more advanced setup)
+# Assuming this script is in project_root/scripts/
+DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+FINANCIAL_DATA_DB_PATH = DEFAULT_DATA_DIR / "financial_data.duckdb"
+AI_JUDGMENTS_DB_PATH = DEFAULT_DATA_DIR / "ai_historical_judgments.duckdb"
 
-    # 唯一約束
-    unique_constraints = table_schema.get("unique_constraints", [])
-    for uc in unique_constraints:
-        uc_name = f'"{uc["name"]}"'
-        uc_cols = ', '.join([f'"{col}"' for col in uc["columns"]])
-        columns_sql_parts.append(f"CONSTRAINT {uc_name} UNIQUE ({uc_cols})")
 
-    sql = f"CREATE TABLE IF NOT EXISTS \"{table_name}\" (\n  " + ",\n  ".join(columns_sql_parts) + "\n);"
-    return sql
-
-def build_create_index_sql(table_name: str, index_def: Dict[str, Any]) -> str:
-    """根據 schema 構建 CREATE INDEX SQL 語句。"""
-    index_name = f'"{index_def["name"]}"'
-    idx_cols = ', '.join([f'"{col}"' for col in index_def["columns"]])
-    sql = f"CREATE INDEX IF NOT EXISTS {index_name} ON \"{table_name}\" ({idx_cols});"
-    return sql
-
-def initialize_database(config_path_str: str, schemas_path_str: str):
-    """
-    初始化 DuckDB 資料庫：連接、創建表、主鍵、唯一約束和索引。
-    """
-    # Determine project root assuming this script is in project_root/scripts/
-    # This allows the script to be called from any directory.
-    script_dir = Path(__file__).resolve().parent
-    project_root = script_dir.parent
-
-    config_path = project_root / config_path_str
-    schemas_path = project_root / schemas_path_str
-
-    logger.info("開始資料庫初始化...")
-
-    config = load_config(config_path)
-    schemas = load_schemas(schemas_path)
-
-    db_file_path_str = config.get("project", {}).get("database_path")
-    if not db_file_path_str:
-        logger.error("配置中未找到 project.database_path。")
-        return
-
-    # If db_file_path_str is absolute, Path will handle it correctly.
-    # If it's relative, it should be relative to the project root.
-    if not Path(db_file_path_str).is_absolute():
-        db_file_path = project_root / db_file_path_str
-    else:
-        db_file_path = Path(db_file_path_str)
-
-    # 確保資料庫文件的父目錄存在
-    db_file_path.parent.mkdir(parents=True, exist_ok=True)
-
-    logger.info(f"將連接/創建 DuckDB 資料庫於: {db_file_path}")
-
-    con = None # Initialize con to None
-    try:
-        con = duckdb.connect(database=str(db_file_path), read_only=False)
-        logger.info("成功連接到 DuckDB。")
-
-        for table_name, table_schema in schemas.items():
-            logger.info(f"準備處理表: {table_name}")
-
-            # 1. 創建表
-            create_table_sql = build_create_table_sql(table_name, table_schema)
-            logger.debug(f"將執行 CREATE TABLE SQL:\n{create_table_sql}")
-            try:
-                con.execute(create_table_sql)
-                logger.info(f"表 \"{table_name}\" 已成功創建或已存在。")
-            except duckdb.Error as e:
-                logger.error(f"創建表 \"{table_name}\" 時發生錯誤: {e}")
-                continue # 跳過此表的索引創建
-
-            # 2. 創建索引
-            indexes = table_schema.get("indexes", [])
-            if indexes:
-                logger.info(f"為表 \"{table_name}\" 創建索引...")
-                for index_def in indexes:
-                    try: # Add try-except for individual index creation
-                        create_index_sql = build_create_index_sql(table_name, index_def)
-                        logger.debug(f"將執行 CREATE INDEX SQL:\n{create_index_sql}")
-                        con.execute(create_index_sql)
-                        logger.info(f"索引 \"{index_def['name']}\" 已成功創建或已存在於表 \"{table_name}\"。")
-                    except duckdb.Error as e:
-                        logger.error(f"為表 \"{table_name}\" 創建索引 \"{index_def['name']}\" 時發生錯誤: {e}")
-            else:
-                logger.info(f"表 \"{table_name}\" 沒有定義索引。")
-
-        logger.info("所有表和索引處理完畢。")
-
-    except duckdb.Error as e:
-        logger.error(f"連接到 DuckDB 或執行操作時發生錯誤: {e}")
-    except Exception as e:
-        logger.error(f"發生未預期的錯誤: {e}", exc_info=True)
-    finally:
-        if con: # Check if con was successfully assigned
-            con.close()
-            logger.info("DuckDB 連接已關閉。")
-        logger.info("資料庫初始化完成。")
-
-if __name__ == "__main__":
-    default_config_path = "config/config.yaml"
-    default_schemas_path = "config/schemas.json"
-
-    initialize_database(default_config_path, default_schemas_path)
 def prefill_dim_financial_metric(con: duckdb.DuckDBPyConnection):
     """預填充 dim_financial_metric 表的初始數據。"""
     logger.info("開始預填充 dim_financial_metric 表...")
-
+    # (Content of prefill_dim_financial_metric from previous version, with minor adjustments)
     initial_metrics = [
-        {
-            "source_name": "finmind", "source_metric_name": "營業收入",
-            "canonical_metric_name": "revenue", "metric_description": "Total operating revenue"
-        },
-        {
-            "source_name": "finmind", "source_metric_name": "營業毛利（毛損）",
-            "canonical_metric_name": "gross_profit", "metric_description": "Gross profit or loss"
-        },
-        {
-            "source_name": "finmind", "source_metric_name": "營業利益（損失）",
-            "canonical_metric_name": "operating_income", "metric_description": "Operating income or loss"
-        },
-        {
-            "source_name": "finmind", "source_metric_name": "稅前淨利（淨損）", # FinMind 實際為 "綜合損益總額" or "繼續營業單位稅前淨利（淨損）"
-            "canonical_metric_name": "pretax_income", "metric_description": "Income before tax"
-        }, # Source name for '稅前淨利（淨損）' might need verification from actual FinMind output for income statements
-        {
-            "source_name": "finmind", "source_metric_name": "本期淨利（淨損）", # FinMind 實際為 "本期淨利（淨損）歸屬於母公司業主"
-            "canonical_metric_name": "net_income", "metric_description": "Net income for the period (attributable to parent)"
-        },
-        {
-            "source_name": "finmind", "source_metric_name": "基本每股盈餘",
-            "canonical_metric_name": "eps", "metric_description": "Basic earnings per share"
-        },
-        # Assets - Balance Sheet
-        {
-            "source_name": "finmind", "source_metric_name": "流動資產", # Example, actual name might vary
-            "canonical_metric_name": "current_assets", "metric_description": "Total current assets"
-        },
-        {
-            "source_name": "finmind", "source_metric_name": "非流動資產", # Example
-            "canonical_metric_name": "non_current_assets", "metric_description": "Total non-current assets"
-        },
-        {
-            "source_name": "finmind", "source_metric_name": "資產總計",  # Or "資產總額"
-            "canonical_metric_name": "total_assets", "metric_description": "Total assets"
-        },
-        # Liabilities - Balance Sheet
-        {
-            "source_name": "finmind", "source_metric_name": "流動負債", # Example
-            "canonical_metric_name": "current_liabilities", "metric_description": "Total current liabilities"
-        },
-        {
-            "source_name": "finmind", "source_metric_name": "非流動負債", # Example
-            "canonical_metric_name": "non_current_liabilities", "metric_description": "Total non-current liabilities"
-        },
-        {
-            "source_name": "finmind", "source_metric_name": "負債總計", # Or "負債總額"
-            "canonical_metric_name": "total_liabilities", "metric_description": "Total liabilities"
-        },
-        # Equity - Balance Sheet
-        {
-            "source_name": "finmind", "source_metric_name": "歸屬於母公司業主之權益合計", # Common full name
-            "canonical_metric_name": "equity_attributable_to_owners_of_parent", "metric_description": "Equity attributable to owners of parent"
-        },
-        {
-            "source_name": "finmind", "source_metric_name": "權益總計", # Or "權益總額"
-            "canonical_metric_name": "total_equity", "metric_description": "Total equity"
-        },
-        # Cash Flow Statement
-        {
-            "source_name": "finmind", "source_metric_name": "營業活動之淨現金流入(流出)", # Verify actual FinMind name
-            "canonical_metric_name": "net_cash_flow_from_operating_activities", "metric_description": "Net cash flow from operating activities"
-        },
-        {
-            "source_name": "finmind", "source_metric_name": "投資活動之淨現金流入(流出)", # Verify actual FinMind name
-            "canonical_metric_name": "net_cash_flow_from_investing_activities", "metric_description": "Net cash flow from investing activities"
-        },
-        {
-            "source_name": "finmind", "source_metric_name": "籌資活動之淨現金流入(流出)", # Verify actual FinMind name
-            "canonical_metric_name": "net_cash_flow_from_financing_activities", "metric_description": "Net cash flow from financing activities"
-        },
-        {
-            "source_name": "finmind", "source_metric_name": "本期現金及約當現金增加(減少)數", # Verify actual FinMind name
-            "canonical_metric_name": "net_change_in_cash_and_cash_equivalents", "metric_description": "Net change in cash and cash equivalents"
-        },
-        # Chip Data - Institutional Investors (examples, assuming transform_chip_data_to_canonical will use these as metric_name)
-        # These are illustrative; the actual metric_names will depend on the melt logic in transform_chip_data_to_canonical
-        {
-            "source_name": "finmind", "source_metric_name": "Foreign_Investor_buy_shares", # This would be a generated metric_name after melt
-            "canonical_metric_name": "institutional_foreign_investor_buy_shares", "metric_description": "Foreign Investor Buy Shares"
-        },
-        {
-            "source_name": "finmind", "source_metric_name": "Foreign_Investor_sell_shares",
-            "canonical_metric_name": "institutional_foreign_investor_sell_shares", "metric_description": "Foreign Investor Sell Shares"
-        },
-        {
-            "source_name": "finmind", "source_metric_name": "Foreign_Investor_net_shares",
-            "canonical_metric_name": "institutional_foreign_investor_net_shares", "metric_description": "Foreign Investor Net Buy/Sell Shares"
-        },
-         # Similar entries for Investment_Trust, Dealer_Proprietary, Dealer_Hedging for buy, sell, net_shares
+        # Income Statement - FinMind (example, verify actual source_metric_name from FinMind SDK/API)
+        {"source_api": "finmind", "source_metric_name": "營業收入", "canonical_metric_name": "revenue", "metric_description": "Total operating revenue", "metric_unit": "TWD", "statement_type_hint": "income_statement"},
+        {"source_api": "finmind", "source_metric_name": "營業毛利（毛損）", "canonical_metric_name": "gross_profit", "metric_description": "Gross profit or loss", "metric_unit": "TWD", "statement_type_hint": "income_statement"},
+        {"source_api": "finmind", "source_metric_name": "營業利益（損失）", "canonical_metric_name": "operating_income", "metric_description": "Operating income or loss", "metric_unit": "TWD", "statement_type_hint": "income_statement"},
+        {"source_api": "finmind", "source_metric_name": "繼續營業單位稅前淨利（淨損）", "canonical_metric_name": "pretax_income", "metric_description": "Income before tax from continuing operations", "metric_unit": "TWD", "statement_type_hint": "income_statement"},
+        {"source_api": "finmind", "source_metric_name": "本期淨利（淨損）歸屬於母公司業主", "canonical_metric_name": "net_income_parent", "metric_description": "Net income attributable to owners of parent", "metric_unit": "TWD", "statement_type_hint": "income_statement"},
+        {"source_api": "finmind", "source_metric_name": "基本每股盈餘", "canonical_metric_name": "eps_basic", "metric_description": "Basic earnings per share", "metric_unit": "TWD", "statement_type_hint": "income_statement"},
 
-        # Chip Data - Margin Trading (examples)
-        {
-            "source_name": "finmind", "source_metric_name": "margin_purchase_balance", # Assuming transform converts original to this
-            "canonical_metric_name": "margin_purchase_balance_shares", "metric_description": "Margin Purchase Balance (Shares)"
-        },
-        {
-            "source_name": "finmind", "source_metric_name": "short_sale_balance", # Assuming transform converts original to this
-            "canonical_metric_name": "short_sale_balance_shares", "metric_description": "Short Sale Balance (Shares)"
-        },
+        # Balance Sheet - FinMind (example)
+        {"source_api": "finmind", "source_metric_name": "流動資產", "canonical_metric_name": "current_assets", "metric_description": "Total current assets", "metric_unit": "TWD", "statement_type_hint": "balance_sheet"},
+        {"source_api": "finmind", "source_metric_name": "非流動資產", "canonical_metric_name": "non_current_assets", "metric_description": "Total non-current assets", "metric_unit": "TWD", "statement_type_hint": "balance_sheet"},
+        {"source_api": "finmind", "source_metric_name": "資產總計", "canonical_metric_name": "total_assets", "metric_description": "Total assets", "metric_unit": "TWD", "statement_type_hint": "balance_sheet"},
+        {"source_api": "finmind", "source_metric_name": "流動負債", "canonical_metric_name": "current_liabilities", "metric_description": "Total current liabilities", "metric_unit": "TWD", "statement_type_hint": "balance_sheet"},
+        {"source_api": "finmind", "source_metric_name": "非流動負債", "canonical_metric_name": "non_current_liabilities", "metric_description": "Total non-current liabilities", "metric_unit": "TWD", "statement_type_hint": "balance_sheet"},
+        {"source_api": "finmind", "source_metric_name": "負債總計", "canonical_metric_name": "total_liabilities", "metric_description": "Total liabilities", "metric_unit": "TWD", "statement_type_hint": "balance_sheet"},
+        {"source_api": "finmind", "source_metric_name": "歸屬於母公司業主之權益合計", "canonical_metric_name": "equity_parent", "metric_description": "Equity attributable to owners of parent", "metric_unit": "TWD", "statement_type_hint": "balance_sheet"},
+        {"source_api": "finmind", "source_metric_name": "權益總計", "canonical_metric_name": "total_equity", "metric_description": "Total equity", "metric_unit": "TWD", "statement_type_hint": "balance_sheet"},
 
-        # Chip Data - Shareholding (examples)
-        {
-            "source_name": "finmind", "source_metric_name": "foreign_investment_shares_ratio", # Assuming transform converts original to this
-            "canonical_metric_name": "foreign_ownership_ratio", "metric_description": "Foreign Investment Ownership Ratio (%)"
-        },
+        # Cash Flow - FinMind (example)
+        {"source_api": "finmind", "source_metric_name": "營業活動之淨現金流入（流出）", "canonical_metric_name": "net_cash_ops", "metric_description": "Net cash flow from operating activities", "metric_unit": "TWD", "statement_type_hint": "cash_flow_statement"},
+        {"source_api": "finmind", "source_metric_name": "投資活動之淨現金流入（流出）", "canonical_metric_name": "net_cash_inv", "metric_description": "Net cash flow from investing activities", "metric_unit": "TWD", "statement_type_hint": "cash_flow_statement"},
+        {"source_api": "finmind", "source_metric_name": "籌資活動之淨現金流入（流出）", "canonical_metric_name": "net_cash_fin", "metric_description": "Net cash flow from financing activities", "metric_unit": "TWD", "statement_type_hint": "cash_flow_statement"},
+        {"source_api": "finmind", "source_metric_name": "本期現金及約當現金增加（減少）數", "canonical_metric_name": "net_change_cash", "metric_description": "Net change in cash and cash equivalents", "metric_unit": "TWD", "statement_type_hint": "cash_flow_statement"},
 
-        # Event Data - Monthly Revenue
-        {
-            "source_name": "finmind", "source_metric_name": "monthly_revenue", # Assuming 'revenue' column from API is mapped to this in transform
-            "canonical_metric_name": "monthly_revenue_twd", "metric_description": "Monthly Revenue (TWD)"
-        },
-        # Event Data - Dividends (examples)
-        {
-            "source_name": "finmind", "source_metric_name": "cash_earnings_distribution", # Assuming transform maps original to this
-            "canonical_metric_name": "cash_dividend_per_share_from_earnings", "metric_description": "Cash Dividend Per Share from Earnings (TWD)"
-        },
-        {
-            "source_name": "finmind", "source_metric_name": "stock_earnings_distribution", # Assuming transform maps original to this
-            "canonical_metric_name": "stock_dividend_ratio_from_earnings", "metric_description": "Stock Dividend Ratio from Earnings (%)"
-        }
-        # TODO: Add more specific mappings as transform logic for chip and event data is finalized
+        # Common Ratios (illustrative - source_metric_name would be how they are derived or named if from API)
+        {"source_api": "calculated", "source_metric_name": "ROE", "canonical_metric_name": "roe", "metric_description": "Return on Equity", "metric_unit": "%", "statement_type_hint": "ratios"},
+        {"source_api": "calculated", "source_metric_name": "ROA", "canonical_metric_name": "roa", "metric_description": "Return on Assets", "metric_unit": "%", "statement_type_hint": "ratios"},
+        {"source_api": "calculated", "source_metric_name": "GrossProfitMargin", "canonical_metric_name": "gross_profit_margin", "metric_description": "Gross Profit Margin", "metric_unit": "%", "statement_type_hint": "ratios"},
+        {"source_api": "calculated", "source_metric_name": "OperatingProfitMargin", "canonical_metric_name": "operating_profit_margin", "metric_description": "Operating Profit Margin", "metric_unit": "%", "statement_type_hint": "ratios"},
+        {"source_api": "calculated", "source_metric_name": "NetProfitMargin", "canonical_metric_name": "net_profit_margin", "metric_description": "Net Profit Margin", "metric_unit": "%", "statement_type_hint": "ratios"},
     ]
-
     now_utc = datetime.now(timezone.utc)
-
-    # Prepare data for executemany
     data_to_insert = [
         (
-            item["canonical_metric_name"],
-            item["source_name"],
+            item["source_api"],
             item["source_metric_name"],
-            item["metric_description"],
+            item["canonical_metric_name"],
+            item.get("metric_description"),
+            item.get("metric_unit"),
+            item.get("statement_type_hint"),
+            item.get("is_growth_metric", False),
             now_utc
         ) for item in initial_metrics
     ]
-
-    # DuckDB's ON CONFLICT syntax for primary key 'canonical_metric_name'
-    # For a table with a single primary key 'canonical_metric_name',
-    # ON CONFLICT (canonical_metric_name) DO NOTHING ensures idempotency.
-    # If other columns should be updated on conflict, use DO UPDATE SET ...
     insert_sql = """
     INSERT INTO dim_financial_metric
-        (canonical_metric_name, source_name, source_metric_name, metric_description, last_updated_in_db_timestamp)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT (canonical_metric_name) DO UPDATE SET
-        source_name = excluded.source_name,
-        source_metric_name = excluded.source_metric_name,
+        (source_api, source_metric_name, canonical_metric_name, metric_description, metric_unit, statement_type_hint, is_growth_metric, last_updated_in_db_timestamp)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (source_api, source_metric_name) DO UPDATE SET
+        canonical_metric_name = excluded.canonical_metric_name,
         metric_description = excluded.metric_description,
+        metric_unit = excluded.metric_unit,
+        statement_type_hint = excluded.statement_type_hint,
+        is_growth_metric = excluded.is_growth_metric,
+        last_updated_in_db_timestamp = excluded.last_updated_in_db_timestamp
+    WHERE dim_financial_metric.canonical_metric_name != excluded.canonical_metric_name
+       OR dim_financial_metric.metric_description IS DISTINCT FROM excluded.metric_description
+       OR dim_financial_metric.metric_unit IS DISTINCT FROM excluded.metric_unit
+       OR dim_financial_metric.statement_type_hint IS DISTINCT FROM excluded.statement_type_hint
+       OR dim_financial_metric.is_growth_metric IS DISTINCT FROM excluded.is_growth_metric;
+    """
+    # Also ensure canonical_metric_name uniqueness if a different source_api/source_metric_name maps to an existing canonical_metric_name.
+    # This might need a separate UPSERT or a more complex ON CONFLICT for the UNIQUE constraint on canonical_metric_name.
+    # For now, this handles updates if source_api/source_metric_name pair is the same.
+    # A simpler approach for now if canonical_metric_name is UNIQUE and is the main key for lookup from other tables:
+    # Make canonical_metric_name the primary key for prefill, and then map source to it.
+    # The DDL has (source_api, source_metric_name) as PK and canonical_metric_name as UNIQUE.
+    # The prefill logic should align. Let's assume we insert or ignore for canonical_metric_name conflict first,
+    # then handle the source mapping.
+    # Simpler prefill:
+    # canonical_metric_name is UNIQUE. source_api + source_metric_name is PK.
+    # This means one canonical_metric_name can only be defined once.
+    # And one source_api/source_metric_name can only map to one canonical_metric_name.
+
+    # Corrected prefill logic: Upsert based on canonical_metric_name, then map sources.
+    # For simplicity, we'll just insert. If a canonical_metric_name is already defined by another source,
+    # this insert might fail or be skipped depending on how we handle the UNIQUE constraint on canonical_metric_name.
+    # The DDL has UNIQUE(canonical_metric_name).
+    # Let's use ON CONFLICT (canonical_metric_name) DO NOTHING for the first pass of unique canonical names,
+    # then handle source-specific mappings.
+    #
+    # A more robust prefill would be to:
+    # 1. Insert unique canonical_metric_names if they don't exist.
+    # 2. Separately manage the mapping from (source_api, source_metric_name) to canonical_metric_name,
+    #    perhaps in a different table or ensure the (source_api, source_metric_name) PK + unique canonical_metric_name
+    #    logic in dim_financial_metric handles all cases.
+    #
+    # Given the current DDL: (source_api, source_metric_name) is PK, canonical_metric_name is UNIQUE.
+    # The insert should be on (source_api, source_metric_name) and update other fields.
+    # The UNIQUE constraint on canonical_metric_name will prevent two different source metrics from mapping to the SAME canonical name if their source_api/source_metric_name are different.
+    # This is generally desired.
+
+    # The previous insert_sql was for a different PK. Correcting for (source_api, source_metric_name) PK.
+    insert_sql_corrected = """
+    INSERT INTO dim_financial_metric
+        (source_api, source_metric_name, canonical_metric_name, metric_description, metric_unit, statement_type_hint, is_growth_metric, last_updated_in_db_timestamp)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (source_api, source_metric_name) DO UPDATE SET
+        canonical_metric_name = excluded.canonical_metric_name,
+        metric_description = excluded.metric_description,
+        metric_unit = excluded.metric_unit,
+        statement_type_hint = excluded.statement_type_hint,
+        is_growth_metric = excluded.is_growth_metric,
         last_updated_in_db_timestamp = excluded.last_updated_in_db_timestamp;
     """
-    # Using DO UPDATE to ensure existing records are updated with potentially new descriptions or source mappings.
+    # This will still fail if a new (source_api, source_metric_name) tries to use an existing canonical_metric_name.
+    # This is good as it forces unique canonical names.
 
     try:
-        con.executemany(insert_sql, data_to_insert)
+        con.executemany(insert_sql_corrected, data_to_insert)
         logger.info(f"成功插入/更新 {len(data_to_insert)} 筆初始數據到 dim_financial_metric。")
     except duckdb.Error as e:
         logger.error(f"預填充 dim_financial_metric 時發生錯誤: {e}", exc_info=True)
-    except Exception as e: # Catch any other unexpected error
+    except Exception as e:
         logger.error(f"預填充 dim_financial_metric 時發生未預期錯誤: {e}", exc_info=True)
 
 
-def initialize_database(config_path_str: str, schemas_path_str: str):
-    # ... (previous content of initialize_database) ...
+def initialize_all_databases():
+    """Initializes all necessary databases and their schemas."""
+    logger.info("開始所有資料庫的初始化...")
+
+    # Create data directory if it doesn't exist
+    DEFAULT_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    logger.info(f"數據目錄 '{DEFAULT_DATA_DIR}' 已確認/創建。")
+
+    # Initialize financial_data.duckdb
+    logger.info(f"初始化資料庫: {FINANCIAL_DATA_DB_PATH}")
+    con_financial = None
     try:
-        con = duckdb.connect(database=str(db_file_path), read_only=False)
-        logger.info("成功連接到 DuckDB。")
-
-        for table_name, table_schema in schemas.items():
-            # ... (table and index creation logic) ...
-            pass # Placeholder for existing loop
-
-        logger.info("所有表和索引處理完畢。")
-
-        # **新增：預填充 dim_financial_metric 表**
-        if "dim_financial_metric" in schemas: # Ensure the table was defined and potentially created
-            prefill_dim_financial_metric(con)
-        else:
-            logger.warning("Schema 'dim_financial_metric' 未在 schemas.json 中定義，跳過預填充。")
-
+        con_financial = duckdb.connect(database=str(FINANCIAL_DATA_DB_PATH), read_only=False)
+        logger.info(f"成功連接到/創建 {FINANCIAL_DATA_DB_PATH}")
+        con_financial.execute(SQL_DDL_FINANCIAL_DATA)
+        logger.info(f"已在 {FINANCIAL_DATA_DB_PATH} 中執行核心表和索引的 DDL。")
+        prefill_dim_financial_metric(con_financial) # Prefill after table creation
+        logger.info(f"{FINANCIAL_DATA_DB_PATH} 初始化完成。")
     except duckdb.Error as e:
-        logger.error(f"連接到 DuckDB 或執行操作時發生錯誤: {e}")
+        logger.error(f"初始化 {FINANCIAL_DATA_DB_PATH} 時發生 DuckDB 錯誤: {e}", exc_info=True)
     except Exception as e:
-        logger.error(f"發生未預期的錯誤: {e}", exc_info=True)
+        logger.error(f"初始化 {FINANCIAL_DATA_DB_PATH} 時發生未預期錯誤: {e}", exc_info=True)
     finally:
-        if con:
-            con.close()
-            logger.info("DuckDB 連接已關閉。")
-        logger.info("資料庫初始化完成。")
+        if con_financial:
+            con_financial.close()
+            logger.info(f"與 {FINANCIAL_DATA_DB_PATH} 的連接已關閉。")
+
+    # Initialize ai_historical_judgments.duckdb
+    logger.info(f"初始化資料庫: {AI_JUDGMENTS_DB_PATH}")
+    con_ai = None
+    try:
+        con_ai = duckdb.connect(database=str(AI_JUDGMENTS_DB_PATH), read_only=False)
+        logger.info(f"成功連接到/創建 {AI_JUDGMENTS_DB_PATH}")
+        con_ai.execute(SQL_DDL_AI_JUDGMENTS)
+        logger.info(f"已在 {AI_JUDGMENTS_DB_PATH} 中執行核心表和索引的 DDL。")
+        logger.info(f"{AI_JUDGMENTS_DB_PATH} 初始化完成。")
+    except duckdb.Error as e:
+        logger.error(f"初始化 {AI_JUDGMENTS_DB_PATH} 時發生 DuckDB 錯誤: {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"初始化 {AI_JUDGMENTS_DB_PATH} 時發生未預期錯誤: {e}", exc_info=True)
+    finally:
+        if con_ai:
+            con_ai.close()
+            logger.info(f"與 {AI_JUDGMENTS_DB_PATH} 的連接已關閉。")
+
+    logger.info("所有資料庫初始化流程結束。")
+
 
 if __name__ == "__main__":
-    default_config_path = "config/config.yaml"
-    default_schemas_path = "config/schemas.json"
-
-    initialize_database(default_config_path, default_schemas_path)
-```
-**在生成程式碼時，我做了一些微調和改進**：
-*   **`build_create_table_sql` 中對 `DEFAULT` 約束的處理**：使其能更通用地處理 `DEFAULT value` 和 `NOT NULL DEFAULT value` 兩種情況，並將 `DEFAULT` 子句放在類型之後、`NOT NULL` 之前，這更符合標準 SQL 語法。
-*   **路徑解析**：在 `initialize_database` 函數中，修改了 `project_root` 的確定方式，使其更可靠，無論腳本從何處調用。同時，處理了 `database_path` 可能是絕對路徑或相對路徑的情況。
-*   **`con` 的初始化和 `finally` 塊**：將 `con` 初始化為 `None`，並在 `finally` 塊中檢查 `con` 是否已成功賦值後再嘗試關閉，以避免在連接失敗時 `con.close()` 出錯。
-*   **索引創建的錯誤處理**：為單個索引的創建也添加了 `try-except`，這樣一個索引創建失敗不會阻止其他索引的嘗試。
-
-這個腳本現在應該能夠根據我們詳細定義的 `schemas.json` 文件來正確初始化 DuckDB 資料庫了。
+    # Removed config and schema loading from here as DDLs are now hardcoded for this script's purpose
+    # The config for DB paths could still be used if desired, but for simplicity, using defaults here.
+    initialize_all_databases()
