@@ -4,6 +4,8 @@ import logging
 import yaml # Using PyYAML
 from pathlib import Path
 from typing import Dict, Any, List
+from datetime import datetime, timezone # For prefilling timestamp
+import re # For robust default value parsing
 
 # 配置日誌
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -180,6 +182,109 @@ def initialize_database(config_path_str: str, schemas_path_str: str):
         logger.error(f"發生未預期的錯誤: {e}", exc_info=True)
     finally:
         if con: # Check if con was successfully assigned
+            con.close()
+            logger.info("DuckDB 連接已關閉。")
+        logger.info("資料庫初始化完成。")
+
+if __name__ == "__main__":
+    default_config_path = "config/config.yaml"
+    default_schemas_path = "config/schemas.json"
+
+    initialize_database(default_config_path, default_schemas_path)
+def prefill_dim_financial_metric(con: duckdb.DuckDBPyConnection):
+    """預填充 dim_financial_metric 表的初始數據。"""
+    logger.info("開始預填充 dim_financial_metric 表...")
+
+    initial_metrics = [
+        {
+            "source_name": "finmind", "source_metric_name": "營業收入",
+            "canonical_metric_name": "revenue", "metric_description": "Total operating revenue"
+        },
+        {
+            "source_name": "finmind", "source_metric_name": "營業毛利（毛損）",
+            "canonical_metric_name": "gross_profit", "metric_description": "Gross profit or loss"
+        },
+        {
+            "source_name": "finmind", "source_metric_name": "營業利益（損失）",
+            "canonical_metric_name": "operating_income", "metric_description": "Operating income or loss"
+        },
+        {
+            "source_name": "finmind", "source_metric_name": "稅前淨利（淨損）", # FinMind 實際為 "綜合損益總額" or "繼續營業單位稅前淨利（淨損）"
+            "canonical_metric_name": "pretax_income", "metric_description": "Income before tax"
+        }, # Source name for '稅前淨利（淨損）' might need verification from actual FinMind output for income statements
+        {
+            "source_name": "finmind", "source_metric_name": "本期淨利（淨損）", # FinMind 實際為 "本期淨利（淨損）歸屬於母公司業主"
+            "canonical_metric_name": "net_income", "metric_description": "Net income for the period (attributable to parent)"
+        },
+        {
+            "source_name": "finmind", "source_metric_name": "基本每股盈餘",
+            "canonical_metric_name": "eps", "metric_description": "Basic earnings per share"
+        },
+        # TODO: Add more metrics for balance sheet and cash flow as they are implemented
+    ]
+
+    now_utc = datetime.now(timezone.utc)
+
+    # Prepare data for executemany
+    data_to_insert = [
+        (
+            item["canonical_metric_name"],
+            item["source_name"],
+            item["source_metric_name"],
+            item["metric_description"],
+            now_utc
+        ) for item in initial_metrics
+    ]
+
+    # DuckDB's ON CONFLICT syntax for primary key 'canonical_metric_name'
+    # For a table with a single primary key 'canonical_metric_name',
+    # ON CONFLICT (canonical_metric_name) DO NOTHING ensures idempotency.
+    # If other columns should be updated on conflict, use DO UPDATE SET ...
+    insert_sql = """
+    INSERT INTO dim_financial_metric
+        (canonical_metric_name, source_name, source_metric_name, metric_description, last_updated_in_db_timestamp)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT (canonical_metric_name) DO UPDATE SET
+        source_name = excluded.source_name,
+        source_metric_name = excluded.source_metric_name,
+        metric_description = excluded.metric_description,
+        last_updated_in_db_timestamp = excluded.last_updated_in_db_timestamp;
+    """
+    # Using DO UPDATE to ensure existing records are updated with potentially new descriptions or source mappings.
+
+    try:
+        con.executemany(insert_sql, data_to_insert)
+        logger.info(f"成功插入/更新 {len(data_to_insert)} 筆初始數據到 dim_financial_metric。")
+    except duckdb.Error as e:
+        logger.error(f"預填充 dim_financial_metric 時發生錯誤: {e}", exc_info=True)
+    except Exception as e: # Catch any other unexpected error
+        logger.error(f"預填充 dim_financial_metric 時發生未預期錯誤: {e}", exc_info=True)
+
+
+def initialize_database(config_path_str: str, schemas_path_str: str):
+    # ... (previous content of initialize_database) ...
+    try:
+        con = duckdb.connect(database=str(db_file_path), read_only=False)
+        logger.info("成功連接到 DuckDB。")
+
+        for table_name, table_schema in schemas.items():
+            # ... (table and index creation logic) ...
+            pass # Placeholder for existing loop
+
+        logger.info("所有表和索引處理完畢。")
+
+        # **新增：預填充 dim_financial_metric 表**
+        if "dim_financial_metric" in schemas: # Ensure the table was defined and potentially created
+            prefill_dim_financial_metric(con)
+        else:
+            logger.warning("Schema 'dim_financial_metric' 未在 schemas.json 中定義，跳過預填充。")
+
+    except duckdb.Error as e:
+        logger.error(f"連接到 DuckDB 或執行操作時發生錯誤: {e}")
+    except Exception as e:
+        logger.error(f"發生未預期的錯誤: {e}", exc_info=True)
+    finally:
+        if con:
             con.close()
             logger.info("DuckDB 連接已關閉。")
         logger.info("資料庫初始化完成。")

@@ -4,6 +4,7 @@ import requests
 import time
 import logging
 from typing import Optional, Dict, Any, Tuple
+import random # Added for jitter
 
 # 建議將日誌記錄器實例化在模組級別
 logger = logging.getLogger(__name__)
@@ -95,9 +96,12 @@ class BaseConnector(abc.ABC):
 
             attempt += 1
             if attempt < self.max_retries:
-                sleep_time = 2 ** attempt # 指數退避
-                logger.info(f"Retrying in {sleep_time} seconds...")
-                time.sleep(sleep_time)
+                backoff_delay = 2 ** attempt # 指數退避
+                jitter = random.uniform(0, 0.5) # 抖動因子 (0到0.5秒之間，避免過長)
+                total_sleep_time = backoff_delay + jitter
+
+                logger.info(f"Retrying in {total_sleep_time:.2f} seconds... (Attempt {attempt}/{self.max_retries})")
+                time.sleep(total_sleep_time)
 
         logger.error(f"Failed to fetch data from {url} after {self.max_retries} attempts.")
         return None, f"Failed to fetch data from {url} after {self.max_retries} attempts."

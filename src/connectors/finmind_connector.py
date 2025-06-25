@@ -26,34 +26,35 @@ class FinMindConnector(BaseConnector):
         # Pass a dummy api_key or None to super if it expects one.
         super().__init__(api_key=None, source_name="finmind", config=config)
 
-        if logger:
+        if logger: # Use passed logger if available
             self.logger = logger
-        else:
-            self.logger = logging.getLogger(__name__) # Default logger if none provided
+        else: # Otherwise, get a default logger for this module
+            self.logger = logging.getLogger(__name__)
 
-        self.api_token = self._get_config_value('api_keys.finmind_api_token') # Use helper from Base
+        self.api_token = self._get_config_value('api_keys.finmind_api_token')
 
-        if not self.api_token or self.api_token == "YOUR_FINMIND_TOKEN_HERE":
-            self.logger.error("FinMind API token 未在 config.yaml 中正確設定。請填寫 'YOUR_FINMIND_TOKEN_HERE'")
-            # We might allow operation without a token for some public FinMind data,
-            # but login_by_token will fail. Let's make it a warning for now and let methods fail if token is needed.
-            # raise ValueError("FinMind API token 未在 config.yaml 中正確設定。")
-            self.logger.warning("FinMind API token 未設定或為預設值，部分功能可能受限或失敗。")
-            self.data_loader = None # No DataLoader if token is missing/default
-        else:
-            try:
-                self.data_loader = DataLoader()
-                # Attempt to set token, FinMind's login_by_token doesn't return status
-                # It might raise error or print, we assume it works if no exception
-                self.data_loader.login_by_token(api_token=self.api_token)
-                self.logger.info("FinMindConnector: 已成功使用 token 嘗試登入 FinMind API。") # Changed to "嘗試登入"
-            except Exception as e: # Catch potential errors during DataLoader init or login
-                self.logger.error(f"FinMindConnector: DataLoader 初始化或登入失敗: {e}", exc_info=True)
-                self.data_loader = None # Ensure data_loader is None if setup fails
-                # raise # Optionally re-raise to halt creation if login is critical
+        if not self.api_token or self.api_token == "YOUR_FINMIND_TOKEN_HERE" or self.api_token.strip() == "":
+            err_msg = "FinMind API token 未在 config.yaml 中正確設定或為空。"
+            self.logger.error(err_msg)
+            raise ValueError(err_msg) # Raise ValueError as per instruction
+
+        try:
+            self.data_loader = DataLoader()
+            # FinMind's login_by_token typically prints to stdout on success/failure
+            # and doesn't raise an exception for invalid token immediately on login,
+            # but rather when an API call is made that requires a valid token.
+            # We'll assume login call itself doesn't fail catastrophically here.
+            self.data_loader.login_by_token(api_token=self.api_token)
+            # It's hard to programmatically verify login success from login_by_token alone.
+            # A test API call might be needed for true verification, but for __init__, this is a start.
+            self.logger.info(f"FinMindConnector: 已使用 API token '{self.api_token[:4]}...' 嘗試初始化 DataLoader 並登入。")
+        except Exception as e:
+            self.logger.error(f"FinMindConnector: DataLoader 初始化或登入時發生嚴重錯誤: {e}", exc_info=True)
+            # If DataLoader() or login_by_token itself raises an unexpected critical error
+            raise RuntimeError(f"FinMind DataLoader 初始化或登入失敗: {e}")
 
 
-    def _fetch_data_internal(self, api_method_name: str, **kwargs) -> pd.DataFrame: # Renamed from _fetch_data to avoid clash with BaseConnector's abstract method if not overriding
+    def _fetch_data_internal(self, api_method_name: str, **kwargs) -> pd.DataFrame:
         """
         通用的數據獲取內部方法，直接調用 FinMind 的 DataLoader。
         Args:
@@ -61,6 +62,14 @@ class FinMindConnector(BaseConnector):
             **kwargs: 傳遞給 DataLoader 方法的參數。
         Returns:
             pd.DataFrame: 獲取的數據，如果失敗或無數據則為空 DataFrame。
+
+        備註:
+            此方法目前直接依賴 FinMind SDK (DataLoader) 內部的錯誤處理和可能的重試機制。
+            如果 SDK 本身沒有健壯的 API 速率限制處理或網路錯誤重試邏輯，
+            在高頻調用或網路不穩定時，此方法可能直接返回空 DataFrame 或拋出未被捕獲的異常。
+            未來可考慮為此方法增加更上層的、類似 BaseConnector._make_request 中的
+            指數退避與抖動重試邏輯，特別是針對已知的可重試錯誤類型。
+            使用者應自行注意調用頻率，避免超出 FinMind API 的限制。
         """
         if not self.data_loader:
             self.logger.error(f"FinMindConnector ({api_method_name}): DataLoader 未初始化 (可能 token 未設定或登入失敗)。")
@@ -193,6 +202,174 @@ class FinMindConnector(BaseConnector):
     # The current get_stock_price etc. are specific.
     # We'll provide generic implementations for fetch_data and transform_to_canonical
     # that dispatch to specific methods based on a 'data_type' kwarg.
+
+    # --- 新增獲取綜合損益表的功能 ---
+
+    def get_income_statement(self, stock_id: str, start_date: str, end_date: Optional[str] = None) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+        """
+        獲取台股綜合損益表 (Income Statement) 並進行標準化轉換。
+        FinMind 的 'taiwan_stock_income_statement' API 似乎是按季度/年度返回特定時間點的報表，
+        start_date 可能用來指定最早的財報日期，end_date 可能不太適用或有不同含義。
+        根據 FinMindPy/FinMind/data/finmind_api.py, taiwan_stock_income_statement 接受 start_date。
+        它似乎會返回該 start_date 之後的所有可用季度/年度數據。
+        如果 FinMind SDK 更新，參數可能會改變。
+        """
+        self.logger.info(f"FinMindConnector: 獲取股票 {stock_id} 從 {start_date} 開始的綜合損益表數據。")
+        # FinMind 的 taiwan_stock_income_statement 通常不需要 end_date，它會獲取指定股票和日期之後的所有數據
+        # 或者，如果 start_date 是 YYYY-MM-DD，它可能只獲取該日期所屬的季度/年度的數據。
+        # 假設 start_date 是用來過濾報告日期的下限。
+        fetch_params = {'stock_id': stock_id, 'start_date': start_date}
+        # if end_date: # 如果 FinMind API 支持 end_date for income statements in future
+        #     fetch_params['end_date'] = end_date
+
+        raw_df = self._fetch_data_internal(
+            api_method_name='taiwan_stock_income_statement',
+            **fetch_params
+        )
+
+        if raw_df.empty:
+            self.logger.warning(f"FinMindConnector: 未能從 API 獲取股票 {stock_id} (自 {start_date}) 的綜合損益表數據，或返回數據為空。")
+            # 返回符合 fact_financial_statement schema 的空 DataFrame
+            return pd.DataFrame(columns=self._get_canonical_financials_columns()), None
+
+        return self.transform_financials_to_canonical(raw_df=raw_df, stock_id=stock_id, statement_type="income_statement")
+
+    def transform_financials_to_canonical(self, raw_df: pd.DataFrame, stock_id: str, statement_type: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+        """
+        將來自 FinMind 的「寬格式」財報 DataFrame (如綜合損益表、資產負債表、現金流量表)
+        轉換為符合 'fact_financial_statement' schema 的「長格式」。
+
+        Args:
+            raw_df (pd.DataFrame): FinMind API 返回的原始財報 DataFrame。
+            stock_id (str): 股票代碼。
+            statement_type (str): 報表類型 (例如 "income_statement", "balance_sheet", "cash_flow_statement")
+                                  這將用於填充 fact_financial_statement 中的 statement_type 欄位。
+
+        Returns:
+            Tuple[Optional[pd.DataFrame], Optional[str]]: 標準化後的 DataFrame 及錯誤信息。
+        """
+        self.logger.debug(f"FinMindConnector: 開始轉換股票 {stock_id} 的 {len(raw_df)} 筆 {statement_type} 數據。")
+        try:
+            if raw_df.empty:
+                self.logger.info(f"FinMindConnector: 原始 {statement_type} 數據為空 for {stock_id}，無需轉換。")
+                return pd.DataFrame(columns=self._get_canonical_financials_columns()), None
+
+            canonical_df = raw_df.copy()
+
+            # 1a. 欄位重命名 (初步)
+            # FinMind 的財報欄位：date, stock_id, type (e.g. "Q1"), ... (各種財報指標)
+            # 我們 schema: security_id, fiscal_period, announcement_date, data_snapshot_date, metric_name, metric_value, currency, source_api, last_updated_in_db_timestamp
+
+            rename_map_initial = {
+                'date': 'report_date', # FinMind 的 'date' 是財報期末日期
+                'stock_id': 'security_id'
+                # 'type' 欄位將用於 fiscal_period
+            }
+            canonical_df.rename(columns=rename_map_initial, inplace=True)
+
+            # 處理財報期間相關欄位
+            if 'type' not in canonical_df.columns:
+                return None, f"FinMindConnector: 財報數據缺少 'type' 欄位 (用於 fiscal_period) for {stock_id}."
+
+            canonical_df['fiscal_period'] = canonical_df['type'] # e.g., Q1, Q2, Q3, Q4
+            canonical_df['report_date'] = pd.to_datetime(canonical_df['report_date']).dt.date
+
+            # 從 report_date 提取年份作為 fiscal_year
+            # 注意：對於跨年度的財報期（例如，公司財年結束於1月），這可能需要更複雜的邏輯。
+            # FinMind 的台股財報 'date' 通常是該季/年的結束日，所以直接取年份是合理的。
+            canonical_df['fiscal_year'] = pd.to_datetime(canonical_df['report_date']).dt.year
+
+
+            # 1b. 數據透視 (Unpivot/Melt)
+            # 確定ID變量 (不被 melt 的列)
+            # 這些是每個財報記錄的唯一標識符，除了具體的指標本身。
+            id_vars = ['security_id', 'report_date', 'fiscal_year', 'fiscal_period', 'type'] # 'type' is kept temporarily if needed, or used for fiscal_period
+
+            # 確定值變量 (需要被 melt 成 metric_name 和 metric_value 的列)
+            # 這些是除了 id_vars 和我們不想要的原始欄位之外的所有列。
+            # FinMind 的財報 API 返回的列中，除了 date, stock_id, type 之外，其他基本都是財報指標。
+            # 我們需要排除任何非指標的元數據列，如果有的話。
+            # 'origin_url' 是 FinMind 可能返回的一個元數據列，我們不需要它作為指標。
+            # 'currency' 也可能出現，但我們 schema 中有單獨的 currency 欄位。
+            value_vars = [col for col in canonical_df.columns if col not in id_vars and col not in ['origin_url', 'currency']]
+
+            if not value_vars:
+                return None, f"FinMindConnector: 未找到可用於 melt 的財報指標欄位 for {stock_id}."
+
+            melted_df = canonical_df.melt(
+                id_vars=id_vars,
+                value_vars=value_vars,
+                var_name='metric_name', # 新的指標名稱列
+                value_name='metric_value' # 新的指標值列
+            )
+
+            # 類型轉換 for metric_value
+            melted_df['metric_value'] = pd.to_numeric(melted_df['metric_value'], errors='coerce')
+            # 可以選擇在此處 dropna(subset=['metric_value'])，或者在 DatabaseWriter 層面處理
+            # 根據 schema，metric_value 可以為 NULL，所以暫不 dropna
+
+            # 1c. 添加元數據
+            melted_df['source_api'] = self.source_name
+            melted_df['last_updated_in_db_timestamp'] = datetime.now(timezone.utc) # Renamed to match schema
+            melted_df['statement_type'] = statement_type # 從參數傳入
+
+            # 處理 schema 中定義但 FinMind 不直接提供的欄位
+            melted_df['announcement_date'] = pd.NaT # FinMind income_statement 不直接提供公告日
+            melted_df['data_snapshot_date'] = datetime.now(timezone.utc).date() # 使用當前日期作為快照日期
+            melted_df['currency'] = 'TWD' # 台股財報通常為新台幣
+
+            # 1d. 最終格式化：篩選並排序欄位
+            final_columns = self._get_canonical_financials_columns()
+
+            # 確保所有期望的欄位都存在，並按正確順序排列
+            df_to_return = pd.DataFrame(columns=final_columns)
+            for col in final_columns:
+                if col in melted_df.columns:
+                    df_to_return[col] = melted_df[col]
+                else: # Schema 中有但 melted_df 中沒有的，設為 None (Pandas 會處理為 NaT/NaN)
+                    df_to_return[col] = None
+
+            # 根據 schema，announcement_date 和 data_snapshot_date 是 NOT NULL
+            # 但由於 FinMind 不提供 announcement_date，我們需要在 schema 中調整或有其他來源
+            # 目前暫時允許 announcement_date 為 NaT，data_snapshot_date 設為今天
+            # fiscal_period 已經從 'type' 賦值
+
+            # 關鍵欄位清洗
+            # fiscal_period 是主鍵的一部分，不能為空
+            # metric_name 也是主鍵一部分
+            critical_cols_for_dropna = ['security_id', 'report_date', 'fiscal_year', 'fiscal_period', 'metric_name', 'statement_type']
+            cols_to_dropna_on = [col for col in critical_cols_for_dropna if col in df_to_return.columns]
+            if cols_to_dropna_on:
+                 df_to_return.dropna(subset=cols_to_dropna_on, inplace=True)
+
+
+            if df_to_return.empty and not raw_df.empty:
+                 self.logger.warning(f"FinMindConnector: 股票 {stock_id} 的 {statement_type} 數據在轉換/清洗後變為空。")
+
+            self.logger.info(f"FinMindConnector: 成功轉換股票 {stock_id} 的 {len(df_to_return)} 筆 {statement_type} 標準化記錄。")
+            return df_to_return, None
+
+        except Exception as e:
+            error_msg = f"FinMindConnector: 轉換股票代碼 {stock_id} 的 {statement_type} 數據時失敗: {e}"
+            self.logger.error(error_msg, exc_info=True)
+            return None, error_msg
+
+    def _get_canonical_financials_columns(self) -> List[str]:
+        """返回財報標準模型 (fact_financial_statement) 的欄位列表。"""
+        # 順序應與 schemas.json 中 fact_financial_statement 的定義一致
+        return [
+            "security_id", "fiscal_period", "announcement_date", "data_snapshot_date",
+            "metric_name", "metric_value", "currency", "source_api",
+            "last_updated_in_db_timestamp",
+            # 以下是輔助轉換或從原始數據中提取的，確保它們在 melt 之前被正確處理或在之後添加
+            "report_date", "fiscal_year", "statement_type"
+            # 注意： 'type' from FinMind is mapped to 'fiscal_period'.
+            # 'filing_date' is in schema but not directly from this FinMind API.
+            # We added 'statement_type' to record if it's income_statement, balance_sheet etc.
+            # 'report_date' is the FinMind 'date' field.
+            # 'fiscal_year' is derived from 'report_date'.
+        ]
+
 
     def fetch_data(self, data_type: str = "stock_price", **kwargs) -> Tuple[Optional[Any], Optional[str]]:
         """
