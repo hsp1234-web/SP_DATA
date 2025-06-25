@@ -4,3 +4,4 @@
 # from .fmp_connector import FMPConnector
 
 from .base_connector import BaseConnector
+from .dbnomics_connector import DBnomicsConnector

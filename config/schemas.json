@@ -1,265 +1,55 @@
 {
   "fact_stock_price": {
-    "description": "標準化的每日股價數據模型。複合主鍵 (price_date, security_id, source_api) 允許同一天同一股票有多個來源的記錄，但通常在入庫前或使用時會進行去重或選擇。",
+    "description": "標準化的每日股價數據模型",
     "columns": [
-      {
-        "name": "price_date",
-        "type": "DATE",
-        "constraints": "NOT NULL",
-        "description": "價格日期 (YYYY-MM-DD)"
-      },
-      {
-        "name": "security_id",
-        "type": "TEXT",
-        "constraints": "NOT NULL",
-        "description": "標準化的股票/證券代碼 (例如：AAPL, 2330.TW)"
-      },
-      {
-        "name": "open_price",
-        "type": "REAL",
-        "description": "開盤價"
-      },
-      {
-        "name": "high_price",
-        "type": "REAL",
-        "description": "最高價"
-      },
-      {
-        "name": "low_price",
-        "type": "REAL",
-        "description": "最低價"
-      },
-      {
-        "name": "close_price",
-        "type": "REAL",
-        "description": "收盤價"
-      },
-      {
-        "name": "adjusted_close_price",
-        "type": "REAL",
-        "description": "調整後收盤價 (考慮股息、拆股等)"
-      },
-      {
-        "name": "volume",
-        "type": "INTEGER",
-        "description": "成交量"
-      },
-      {
-        "name": "turnover",
-        "type": "REAL",
-        "description": "成交額 (可選)"
-      },
-      {
-        "name": "vwap",
-        "type": "REAL",
-        "description": "成交量加權平均價 (可選, Volume Weighted Average Price)"
-      },
-      {
-        "name": "change_absolute",
-        "type": "REAL",
-        "description": "價格絕對變動值 (例如：close - previous_close)"
-      },
-      {
-        "name": "change_percent",
-        "type": "REAL",
-        "description": "價格變動百分比"
-      },
-      {
-        "name": "source_api",
-        "type": "TEXT",
-        "constraints": "NOT NULL",
-        "description": "數據來源的 API 名稱 (例如：fmp, finmind, eodhd)"
-      },
-      {
-        "name": "fetched_timestamp",
-        "type": "DATETIME",
-        "constraints": "NOT NULL",
-        "description": "此記錄從API原始抓取的 UTC 時間戳"
-      },
-      {
-        "name": "last_updated_in_db_timestamp",
-        "type": "DATETIME",
-        "constraints": "NOT NULL",
-        "description": "此記錄在數據庫中最後插入或更新的 UTC 時間戳"
-      }
+      { "name": "price_date", "type": "DATE", "description": "價格日期 (YYYY-MM-DD)" },
+      { "name": "security_id", "type": "TEXT", "description": "標準化的股票/證券代碼 (例如：AAPL, 2330.TW)" },
+      { "name": "open_price", "type": "REAL", "description": "開盤價" },
+      { "name": "high_price", "type": "REAL", "description": "最高價" },
+      { "name": "low_price", "type": "REAL", "description": "最低價" },
+      { "name": "close_price", "type": "REAL", "description": "收盤價" },
+      { "name": "volume", "type": "INTEGER", "description": "成交量" },
+      { "name": "source_api", "type": "TEXT", "description": "數據來源的 API 名稱" },
+      { "name": "last_updated_timestamp", "type": "DATETIME", "description": "此記錄最後更新的 UTC 時間戳" }
     ],
-    "primary_keys": ["price_date", "security_id", "source_api"],
-    "indexes": [
-      {"name": "idx_stock_price_security_date", "columns": ["security_id", "price_date"]}
-    ]
+    "primary_keys": ["price_date", "security_id"]
   },
   "fact_financial_statement": {
-    "description": "標準化的財報數據模型 (採用 Key-Value 結構以獲得最大彈性)。複合主鍵確保了同一公司、同一報告期、同一指標、同一來源的唯一性。",
+    "description": "標準化的財報數據模型 (採用 Key-Value 結構以獲得最大彈性)",
     "columns": [
-      {
-        "name": "security_id",
-        "type": "TEXT",
-        "constraints": "NOT NULL",
-        "description": "標準化的股票/證券代碼"
-      },
-      {
-        "name": "report_date",
-        "type": "DATE",
-        "constraints": "NOT NULL",
-        "description": "財報涵蓋期間的結束日期 (例如：2024-03-31)，通常是季末或年末"
-      },
-      {
-        "name": "filing_date",
-        "type": "DATE",
-        "description": "財報實際公佈的日期 (可選，部分API提供)"
-      },
-      {
-        "name": "fiscal_year",
-        "type": "INTEGER",
-        "constraints": "NOT NULL",
-        "description": "會計年度 (例如：2023)"
-      },
-      {
-        "name": "fiscal_period",
-        "type": "TEXT",
-        "constraints": "NOT NULL",
-        "description": "會計期間 (例如：Q1, Q2, Q3, Q4, FY for Full Year/Annual)"
-      },
-      {
-        "name": "statement_type",
-        "type": "TEXT",
-        "constraints": "NOT NULL",
-        "description": "報表類型 (例如：income_statement, balance_sheet, cash_flow_statement)"
-      },
-      {
-        "name": "metric_name",
-        "type": "TEXT",
-        "constraints": "NOT NULL",
-        "description": "財務指標的標準化名稱 (例如：revenue, netIncome, totalAssets, freeCashFlow)"
-      },
-      {
-        "name": "metric_value",
-        "type": "REAL",
-        "description": "該財務指標的數值"
-      },
-      {
-        "name": "currency",
-        "type": "TEXT",
-        "description": "財報使用的貨幣單位 (例如：USD, TWD, EUR)"
-      },
-      {
-        "name": "source_api",
-        "type": "TEXT",
-        "constraints": "NOT NULL",
-        "description": "數據來源的 API 名稱"
-      },
-      {
-        "name": "fetched_timestamp",
-        "type": "DATETIME",
-        "constraints": "NOT NULL",
-        "description": "此記錄從API原始抓取的 UTC 時間戳"
-      },
-      {
-        "name": "last_updated_in_db_timestamp",
-        "type": "DATETIME",
-        "constraints": "NOT NULL",
-        "description": "此記錄在數據庫中最後插入或更新的 UTC 時間戳"
-      }
+      { "name": "security_id", "type": "TEXT", "description": "標準化的股票/證券代碼" },
+      { "name": "report_date", "type": "DATE", "description": "財報涵蓋期間的結束日期" },
+      { "name": "filing_date", "type": "DATE", "description": "財報實際公佈的日期" },
+      { "name": "period_type", "type": "TEXT", "description": "財報類型 ('quarterly' 或 'annual')" },
+      { "name": "metric_name", "type": "TEXT", "description": "財務指標的標準化名稱" },
+      { "name": "metric_value", "type": "REAL", "description": "該財務指標的數值" },
+      { "name": "currency", "type": "TEXT", "description": "財報使用的貨幣單位" },
+      { "name": "source_api", "type": "TEXT", "description": "數據來源的 API 名稱" },
+      { "name": "last_updated_timestamp", "type": "DATETIME", "description": "此記錄最後更新的 UTC 時間戳" }
     ],
-    "primary_keys": ["security_id", "report_date", "fiscal_year", "fiscal_period", "statement_type", "metric_name", "source_api"],
-    "indexes": [
-      {"name": "idx_financial_statement_security_period_metric", "columns": ["security_id", "fiscal_year", "fiscal_period", "metric_name"]}
-    ]
+    "primary_keys": ["security_id", "report_date", "period_type", "metric_name"]
+  },
+  "fact_macro_economic_data": {
+    "description": "標準化的宏觀經濟指標數據",
+    "columns": [
+      { "name": "metric_date", "type": "DATE", "description": "指標數據的日期" },
+      { "name": "metric_name", "type": "TEXT", "description": "指標的全局唯一 ID (例如: FRED/FEDFUNDS)" },
+      { "name": "metric_value", "type": "REAL", "description": "指標的數值" },
+      { "name": "source_api", "type": "TEXT", "description": "數據來源 API" },
+      { "name": "last_updated_timestamp", "type": "DATETIME", "description": "記錄最後更新的 UTC 時間戳" }
+    ],
+    "primary_keys": ["metric_date", "metric_name", "source_api"]
   },
   "ai_historical_judgments": {
-    "description": "AI 歷史決策日誌，記錄在每個模擬時間點AI的分析和策略建議。",
+    "description": "AI 在每個歷史時間點的完整決策過程",
     "columns": [
-      {
-        "name": "simulation_id",
-        "type": "TEXT",
-        "constraints": "NOT NULL",
-        "description": "單次完整回溯模擬的唯一ID (例如 UUID，或啟動時間戳)"
-      },
-      {
-        "name": "simulation_timestamp",
-        "type": "DATETIME",
-        "constraints": "NOT NULL",
-        "description": "模擬的歷史時間點 (UTC)"
-      },
-      {
-        "name": "market_briefing_hash",
-        "type": "TEXT",
-        "description": "提供給 AI 的市場簡報內容的 Hash 值 (例如 SHA256)，用於快速比對簡報是否有變化"
-      },
-      {
-        "name": "market_briefing_data_sources",
-        "type": "JSON",
-        "description": "JSON 物件，記錄簡報中各類數據實際使用的 API 來源，例如 {'macro': 'dbnomics', 'spy_price': 'fmp'}"
-      },
-      {
-        "name": "ai_model_name",
-        "type": "TEXT",
-        "constraints": "NOT NULL",
-        "description": "本次分析使用的本地 LLM 名稱 (來自 config.yaml)"
-      },
-      {
-        "name": "ai_system_prompt_version",
-        "type": "TEXT",
-        "description": "AI系統提示的版本或Hash，方便追溯提示變化對結果的影響"
-      },
-      {
-        "name": "ai_request_timestamp",
-        "type": "DATETIME",
-        "description": "向 AI 發起請求的 UTC 時間戳"
-      },
-      {
-        "name": "ai_response_timestamp",
-        "type": "DATETIME",
-        "description": "收到 AI 回應的 UTC 時間戳"
-      },
-      {
-        "name": "ai_processing_duration_ms",
-        "type": "INTEGER",
-        "description": "AI 模型處理請求的時長（毫秒）"
-      },
-      {
-        "name": "ai_raw_response_json",
-        "type": "JSON",
-        "constraints": "NOT NULL",
-        "description": "AI 模型返回的完整、未經處理的 JSON 文本"
-      },
-      {
-        "name": "extracted_strategy_json",
-        "type": "JSON",
-        "description": "從 AI 回應中解析出的結構化交易策略 (根據我們定義的JSON結構)"
-      },
-      {
-        "name": "extracted_factors_json",
-        "type": "JSON",
-        "description": "從 AI 回應中解析出的、促成該策略的關鍵投資因子列表"
-      },
-      {
-        "name": "confidence_score",
-        "type": "REAL",
-        "description": "AI 對其策略的信心評分 (如果有輸出)"
-      },
-      {
-        "name": "status",
-        "type": "TEXT",
-        "default": "SUCCESS",
-        "description": "此條記錄的狀態 (例如 SUCCESS, DATA_MISSING_PARTIAL, AI_ERROR, SKIPPED)"
-      },
-      {
-        "name": "error_message",
-        "type": "TEXT",
-        "description": "如果狀態不是 SUCCESS，記錄錯誤信息"
-      },
-      {
-        "name": "inserted_at_db_timestamp",
-        "type": "DATETIME",
-        "constraints": "NOT NULL",
-        "description": "此記錄插入數據庫的 UTC 時間戳"
-      }
+      { "name": "simulation_timestamp", "type": "DATETIME", "description": "模擬歷史時間點 (主鍵)" },
+      { "name": "market_briefing_text", "type": "TEXT", "description": "提供給 AI 的市場簡報全文" },
+      { "name": "ai_model_used", "type": "TEXT", "description": "本次分析使用的本地 LLM 名稱" },
+      { "name": "ai_raw_response_json", "type": "JSON", "description": "AI 模型返回的完整、未經處理的 JSON 文本" },
+      { "name": "extracted_strategy_json", "type": "JSON", "description": "從回應中解析出的結構化交易策略" },
+      { "name": "extracted_factors_json", "type": "JSON", "description": "促成該策略的關鍵投資因子列表" }
     ],
-    "primary_keys": ["simulation_id", "simulation_timestamp"],
-    "indexes": [
-      {"name": "idx_judgments_sim_id_status", "columns": ["simulation_id", "status"]},
-      {"name": "idx_judgments_model_confidence", "columns": ["ai_model_name", "confidence_score"]}
-    ]
+    "primary_keys": ["simulation_timestamp"]
   }
 }
