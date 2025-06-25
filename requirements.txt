@@ -1,8 +1,13 @@
-duckdb
 pandas
-python-magic
-Pillow
-# Add other specific dependencies if/when they are used, e.g.:
-# openpyxl # For reading .xlsx files with pandas
-# pyarrow  # For parquet file interaction, if used
-# requests # For API interactions, if used
+duckdb
+requests
+PyYAML
+yfinance
+openpyxl
+numpy
+python-json-logger
+# Ensure finlab is listed if direct finlab connector is developed and tested
+# finlab
+# Ensure specific versions if needed, e.g., pandas==1.5.3
+# Add other direct dependencies of your project here.
+# Dependencies of these packages (like pytz for pandas) will be handled by pip.
