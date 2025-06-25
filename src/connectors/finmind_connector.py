@@ -750,14 +750,14 @@ class FinMindConnector(BaseConnector):
         return self.transform_chip_data_to_canonical(raw_df, stock_id, data_category='shareholding')
 
     # 未來可以繼續在此擴充其他類型財報的獲取方法...
-```
+# ``` # Removed backticks and non-Python text below
 
-Một vài chỉnh sửa nhỏ trong quá trình tạo file:
-*   Sửa `api_method` thành `api_method_name` trong `_fetch_data_internal` để提高可讀性。
-*   Trong `transform_stock_price_to_canonical`, thêm kiểm tra `if col in canonical_df.columns:` trước khi thực hiện `pd.to_numeric` để避免 `turnover` 不存在時出錯。
-*   Trong `transform_stock_price_to_canonical`, tạo `df_to_return` 時先以 `final_columns` 初始化，再用 `canonical_df` 中的數據填充，確保即使來源數據缺少某些 schema 中的可選列，最終 DataFrame 結構也完整。
-*   Trong `transform_stock_price_to_canonical` 的 `dropna` 步驟，增加檢查 `cols_to_dropna_on` 是否為空。
-*   Trong `fetch_data` (BaseConnector override), 對於 `raw_df.empty` 的情況，直接返回 `(raw_df, None)`，因為空 DataFrame 本身不是一個 fetch 錯誤。
-*   Trong `transform_to_canonical` (BaseConnector override), 增加了對 `raw_data` 類型的檢查，並嘗試從 `raw_data`（如果是 DataFrame）中推斷 `stock_id`。
+# # Một vài chỉnh sửa nhỏ trong quá trình tạo file:
+# # *   Sửa `api_method` thành `api_method_name` trong `_fetch_data_internal` để提高可讀性。
+# # *   Trong `transform_stock_price_to_canonical`, thêm kiểm tra `if col in canonical_df.columns:` trước khi thực hiện `pd.to_numeric` để避免 `turnover` 不存在時出錯。
+# # *   Trong `transform_stock_price_to_canonical`, tạo `df_to_return` 時先以 `final_columns` 初始化，再用 `canonical_df` 中的數據填充，確保即使來源數據缺少某些 schema 中的可選列，最終 DataFrame 結構也完整。
+# # *   Trong `transform_stock_price_to_canonical` 的 `dropna` 步驟，增加檢查 `cols_to_dropna_on` 是否為空。
+# # *   Trong `fetch_data` (BaseConnector override), 對於 `raw_df.empty` 的情況，直接返回 `(raw_df, None)`，因為空 DataFrame 本身不是一個 fetch 錯誤。
+# # *   Trong `transform_to_canonical` (BaseConnector override), 增加了對 `raw_data` 類型的檢查，並嘗試從 `raw_data`（如果是 DataFrame）中推斷 `stock_id`。
 
-File đã được tạo.
+# # File đã được tạo.
