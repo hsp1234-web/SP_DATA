@@ -1,0 +1,54 @@
+project:
+  # 專案數據庫的根路徑，請根據您的 Google Drive 掛載情況修改
+  database_path: "/content/drive/MyDrive/FinancialData/databases/" # 修改路徑以包含 'databases' 子目錄
+
+api_keys:
+  # 請在此處填寫您的 API 金鑰
+  # 強烈建議使用環境變數或 secrets management 工具來管理金鑰，而非直接寫入此文件
+  fmp_api_key: "YOUR_FMP_KEY_HERE"
+  eodhd_api_key: "YOUR_EODHD_KEY_HERE"
+  finmind_api_key: "YOUR_FINMIND_KEY_HERE" # FinMind 可能需要 token
+  alpaca_api_key: "YOUR_ALPACA_KEY_HERE"
+  alpaca_api_secret: "YOUR_ALPACA_SECRET_HERE"
+  alpha_vantage_api_key: "YOUR_ALPHA_VANTAGE_KEY_HERE"
+  # 其他 API 金鑰...
+
+data_source_strategy:
+  # 數據源獲取優先級，從上到下嘗試
+  # DBnomics 和 yfinance 通常不需要金鑰
+  priority_order:
+    - "dbnomics"      # 宏觀數據首選 (無需Key)
+    - "finmind"       # 台股數據首選 (寬鬆Key/Token)
+    - "fmp"           # 全球股價、基本面數據 (有免費額度)
+    - "eodhd"         # 深度歷史EOD、基本面 (有免費額度)
+    - "alpaca"        # 美股盤中、歷史數據 (有免費額度，需Key+Secret)
+    - "yfinance"      # 備用，非關鍵數據 (無需Key, 但不穩定)
+    - "alpha_vantage" # 備用，特定用途 (有免費額度，但限制較嚴)
+
+ai_model:
+  # 本地 AI 模型相關設定
+  local_model_name: "llama3:8b-instruct-q4_K_M" # Ollama 中模型的名稱
+  ollama_api_base_url: "http://localhost:11434/api" # Ollama API 端點
+  system_prompt: > # 給予 AI 的系統級指令/角色扮演提示
+    你是一位經驗豐富的宏觀對沖基金交易員和金融分析師。
+    你的任務是基於提供的市場簡報，進行深入分析，並以結構化的 JSON 格式提出中長期（數週至數季）的交易策略建議。
+    請確保你的分析基於數據，並明確指出策略的核心邏輯、關鍵因子、潛在風險和信心水平。
+    嚴格遵守只使用簡報中提供的信息，不要假設任何簡報之外的知識。
+
+requests_config:
+  # 通用網路請求設定
+  timeout: 30 # 請求超時時間（秒）
+  max_retries: 3 # 最大重試次數
+  base_headers:
+    User-Agent: "FinancialDataAI/1.0 (Python Requests; +https://github.com/your_repo_here)" # 禮貌性 User-Agent
+
+simulation_parameters:
+  # 歷史回溯模擬參數
+  backtrack_period_hours: 12 # 每次回溯的時間間隔（小時）
+  # "today_anchor": "US_MARKET_CLOSE" # 指示如何確定回溯起點的“今天”，例如美國市場的最後收盤日UTC時間
+  # (具體實現會在 run.py 中處理)
+
+logging:
+  level: "INFO" # 日誌級別 (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  log_file_path: "/content/drive/MyDrive/FinancialData/logs/app.log" # 日誌文件路徑

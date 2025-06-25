@@ -1,202 +1,265 @@
 {
-    "weekly_report": {
-        "keywords": [
-            "weekly_fut",
-            "weekly_opt",
-            "opendata",
-            "商品名稱"
-        ],
-        "db_table_name": "fact_weekly_report",
-        "required_columns": ["trading_date", "product_name", "investor_type", "long_pos_volume", "short_pos_volume"],
-        "unique_key": [
-            "trading_date",
-            "product_name",
-            "investor_type"
-        ],
-        "columns_map": {
-            "trading_date": {
-                "db_type": "DATE",
-                "aliases": [
-                    "日期",
-                    "交易日期"
-                ]
-            },
-            "product_name": {
-                "db_type": "VARCHAR",
-                "aliases": [
-                    "商品名稱",
-                    "契約"
-                ]
-            },
-            "investor_type": {
-                "db_type": "VARCHAR",
-                "aliases": [
-                    "身份別"
-                ]
-            },
-            "long_pos_volume": {
-                "db_type": "BIGINT",
-                "aliases": [
-                    "多方交易口數"
-                ]
-            },
-            "long_pos_value": {
-                "db_type": "BIGINT",
-                "aliases": [
-                    "多方交易金額"
-                ]
-            },
-            "short_pos_volume": {
-                "db_type": "BIGINT",
-                "aliases": [
-                    "空方交易口數"
-                ]
-            },
-            "short_pos_value": {
-                "db_type": "BIGINT",
-                "aliases": [
-                    "空方交易金額"
-                ]
-            },
-            "source": {
-                "db_type": "VARCHAR",
-                "aliases": ["source"]
-            }
-        }
-    },
-    "default_daily": {
-        "keywords": [
-            "daily",
-            "optionsdaily",
-            "fut",
-            "opt",
-            "2021",
-            "2022",
-            "2023",
-            "2024",
-            "csv",
-            "delta"
-        ],
-        "db_table_name": "fact_daily_ohlc",
-        "required_columns": ["trading_date", "product_id", "close", "volume"],
-        "primary_key": ["trading_date", "product_id", "expiry_month", "strike_price", "option_type"],
-        "unique_key": [
-            "trading_date",
-            "product_id",
-            "expiry_month",
-            "strike_price",
-            "option_type"
-        ],
-        "columns_map": {
-            "trading_date": {
-                "db_type": "DATE",
-                "aliases": [
-                    "交易日期",
-                    "日期"
-                ]
-            },
-            "product_id": {
-                "db_type": "VARCHAR",
-                "aliases": [
-                    "契約代號",
-                    "契約",
-                    "商品代號"
-                ]
-            },
-            "expiry_month": {
-                "db_type": "VARCHAR",
-                "aliases": [
-                    "到期月份(週別)"
-                ]
-            },
-            "strike_price": {
-                "db_type": "DOUBLE",
-                "aliases": [
-                    "履約價"
-                ]
-            },
-            "option_type": {
-                "db_type": "VARCHAR",
-                "aliases": [
-                    "買賣權"
-                ]
-            },
-            "open": {
-                "db_type": "DOUBLE",
-                "aliases": [
-                    "開盤價"
-                ]
-            },
-            "high": {
-                "db_type": "DOUBLE",
-                "aliases": [
-                    "最高價"
-                ]
-            },
-            "low": {
-                "db_type": "DOUBLE",
-                "aliases": [
-                    "最低價"
-                ]
-            },
-            "close": {
-                "db_type": "DOUBLE",
-                "aliases": [
-                    "收盤價"
-                ]
-            },
-            "volume": {
-                "db_type": "BIGINT",
-                "aliases": [
-                    "成交量",
-                    "成交口數"
-                ]
-            },
-            "open_interest": {
-                "db_type": "BIGINT",
-                "aliases": [
-                    "未沖銷契約量",
-                    "未沖銷契約數",
-                    "未沖銷口數"
-                ]
-            },
-            "delta": {
-                "db_type": "DOUBLE",
-                "aliases": [
-                    "delta"
-                ]
-            },
-            "source": {
-                "db_type": "VARCHAR",
-                "aliases": ["source"]
-            }
-        }
-    },
-    "quarantine_table_schema": {
-        "db_table_name": "quarantine_data",
-        "columns_map": {
-            "trading_date": {"db_type": "VARCHAR"},
-            "product_id": {"db_type": "VARCHAR"},
-            "expiry_month": {"db_type": "VARCHAR"},
-            "strike_price": {"db_type": "VARCHAR"},
-            "option_type": {"db_type": "VARCHAR"},
-            "open": {"db_type": "VARCHAR"},
-            "high": {"db_type": "VARCHAR"},
-            "low": {"db_type": "VARCHAR"},
-            "close": {"db_type": "VARCHAR"},
-            "volume": {"db_type": "VARCHAR"},
-            "open_interest": {"db_type": "VARCHAR"},
-            "delta": {"db_type": "VARCHAR"},
-            "product_name": {"db_type": "VARCHAR"},
-            "investor_type": {"db_type": "VARCHAR"},
-            "long_pos_volume": {"db_type": "VARCHAR"},
-            "long_pos_value": {"db_type": "VARCHAR"},
-            "short_pos_volume": {"db_type": "VARCHAR"},
-            "short_pos_value": {"db_type": "VARCHAR"},
-            "source": {"db_type": "VARCHAR"},
-            "quarantine_reason": {"db_type": "VARCHAR"},
-            "source_file": {"db_type": "VARCHAR"}
-        },
-        "required_columns": ["quarantine_reason", "source_file"]
-    }
+  "fact_stock_price": {
+    "description": "標準化的每日股價數據模型。複合主鍵 (price_date, security_id, source_api) 允許同一天同一股票有多個來源的記錄，但通常在入庫前或使用時會進行去重或選擇。",
+    "columns": [
+      {
+        "name": "price_date",
+        "type": "DATE",
+        "constraints": "NOT NULL",
+        "description": "價格日期 (YYYY-MM-DD)"
+      },
+      {
+        "name": "security_id",
+        "type": "TEXT",
+        "constraints": "NOT NULL",
+        "description": "標準化的股票/證券代碼 (例如：AAPL, 2330.TW)"
+      },
+      {
+        "name": "open_price",
+        "type": "REAL",
+        "description": "開盤價"
+      },
+      {
+        "name": "high_price",
+        "type": "REAL",
+        "description": "最高價"
+      },
+      {
+        "name": "low_price",
+        "type": "REAL",
+        "description": "最低價"
+      },
+      {
+        "name": "close_price",
+        "type": "REAL",
+        "description": "收盤價"
+      },
+      {
+        "name": "adjusted_close_price",
+        "type": "REAL",
+        "description": "調整後收盤價 (考慮股息、拆股等)"
+      },
+      {
+        "name": "volume",
+        "type": "INTEGER",
+        "description": "成交量"
+      },
+      {
+        "name": "turnover",
+        "type": "REAL",
+        "description": "成交額 (可選)"
+      },
+      {
+        "name": "vwap",
+        "type": "REAL",
+        "description": "成交量加權平均價 (可選, Volume Weighted Average Price)"
+      },
+      {
+        "name": "change_absolute",
+        "type": "REAL",
+        "description": "價格絕對變動值 (例如：close - previous_close)"
+      },
+      {
+        "name": "change_percent",
+        "type": "REAL",
+        "description": "價格變動百分比"
+      },
+      {
+        "name": "source_api",
+        "type": "TEXT",
+        "constraints": "NOT NULL",
+        "description": "數據來源的 API 名稱 (例如：fmp, finmind, eodhd)"
+      },
+      {
+        "name": "fetched_timestamp",
+        "type": "DATETIME",
+        "constraints": "NOT NULL",
+        "description": "此記錄從API原始抓取的 UTC 時間戳"
+      },
+      {
+        "name": "last_updated_in_db_timestamp",
+        "type": "DATETIME",
+        "constraints": "NOT NULL",
+        "description": "此記錄在數據庫中最後插入或更新的 UTC 時間戳"
+      }
+    ],
+    "primary_keys": ["price_date", "security_id", "source_api"],
+    "indexes": [
+      {"name": "idx_stock_price_security_date", "columns": ["security_id", "price_date"]}
+    ]
+  },
+  "fact_financial_statement": {
+    "description": "標準化的財報數據模型 (採用 Key-Value 結構以獲得最大彈性)。複合主鍵確保了同一公司、同一報告期、同一指標、同一來源的唯一性。",
+    "columns": [
+      {
+        "name": "security_id",
+        "type": "TEXT",
+        "constraints": "NOT NULL",
+        "description": "標準化的股票/證券代碼"
+      },
+      {
+        "name": "report_date",
+        "type": "DATE",
+        "constraints": "NOT NULL",
+        "description": "財報涵蓋期間的結束日期 (例如：2024-03-31)，通常是季末或年末"
+      },
+      {
+        "name": "filing_date",
+        "type": "DATE",
+        "description": "財報實際公佈的日期 (可選，部分API提供)"
+      },
+      {
+        "name": "fiscal_year",
+        "type": "INTEGER",
+        "constraints": "NOT NULL",
+        "description": "會計年度 (例如：2023)"
+      },
+      {
+        "name": "fiscal_period",
+        "type": "TEXT",
+        "constraints": "NOT NULL",
+        "description": "會計期間 (例如：Q1, Q2, Q3, Q4, FY for Full Year/Annual)"
+      },
+      {
+        "name": "statement_type",
+        "type": "TEXT",
+        "constraints": "NOT NULL",
+        "description": "報表類型 (例如：income_statement, balance_sheet, cash_flow_statement)"
+      },
+      {
+        "name": "metric_name",
+        "type": "TEXT",
+        "constraints": "NOT NULL",
+        "description": "財務指標的標準化名稱 (例如：revenue, netIncome, totalAssets, freeCashFlow)"
+      },
+      {
+        "name": "metric_value",
+        "type": "REAL",
+        "description": "該財務指標的數值"
+      },
+      {
+        "name": "currency",
+        "type": "TEXT",
+        "description": "財報使用的貨幣單位 (例如：USD, TWD, EUR)"
+      },
+      {
+        "name": "source_api",
+        "type": "TEXT",
+        "constraints": "NOT NULL",
+        "description": "數據來源的 API 名稱"
+      },
+      {
+        "name": "fetched_timestamp",
+        "type": "DATETIME",
+        "constraints": "NOT NULL",
+        "description": "此記錄從API原始抓取的 UTC 時間戳"
+      },
+      {
+        "name": "last_updated_in_db_timestamp",
+        "type": "DATETIME",
+        "constraints": "NOT NULL",
+        "description": "此記錄在數據庫中最後插入或更新的 UTC 時間戳"
+      }
+    ],
+    "primary_keys": ["security_id", "report_date", "fiscal_year", "fiscal_period", "statement_type", "metric_name", "source_api"],
+    "indexes": [
+      {"name": "idx_financial_statement_security_period_metric", "columns": ["security_id", "fiscal_year", "fiscal_period", "metric_name"]}
+    ]
+  },
+  "ai_historical_judgments": {
+    "description": "AI 歷史決策日誌，記錄在每個模擬時間點AI的分析和策略建議。",
+    "columns": [
+      {
+        "name": "simulation_id",
+        "type": "TEXT",
+        "constraints": "NOT NULL",
+        "description": "單次完整回溯模擬的唯一ID (例如 UUID，或啟動時間戳)"
+      },
+      {
+        "name": "simulation_timestamp",
+        "type": "DATETIME",
+        "constraints": "NOT NULL",
+        "description": "模擬的歷史時間點 (UTC)"
+      },
+      {
+        "name": "market_briefing_hash",
+        "type": "TEXT",
+        "description": "提供給 AI 的市場簡報內容的 Hash 值 (例如 SHA256)，用於快速比對簡報是否有變化"
+      },
+      {
+        "name": "market_briefing_data_sources",
+        "type": "JSON",
+        "description": "JSON 物件，記錄簡報中各類數據實際使用的 API 來源，例如 {'macro': 'dbnomics', 'spy_price': 'fmp'}"
+      },
+      {
+        "name": "ai_model_name",
+        "type": "TEXT",
+        "constraints": "NOT NULL",
+        "description": "本次分析使用的本地 LLM 名稱 (來自 config.yaml)"
+      },
+      {
+        "name": "ai_system_prompt_version",
+        "type": "TEXT",
+        "description": "AI系統提示的版本或Hash，方便追溯提示變化對結果的影響"
+      },
+      {
+        "name": "ai_request_timestamp",
+        "type": "DATETIME",
+        "description": "向 AI 發起請求的 UTC 時間戳"
+      },
+      {
+        "name": "ai_response_timestamp",
+        "type": "DATETIME",
+        "description": "收到 AI 回應的 UTC 時間戳"
+      },
+      {
+        "name": "ai_processing_duration_ms",
+        "type": "INTEGER",
+        "description": "AI 模型處理請求的時長（毫秒）"
+      },
+      {
+        "name": "ai_raw_response_json",
+        "type": "JSON",
+        "constraints": "NOT NULL",
+        "description": "AI 模型返回的完整、未經處理的 JSON 文本"
+      },
+      {
+        "name": "extracted_strategy_json",
+        "type": "JSON",
+        "description": "從 AI 回應中解析出的結構化交易策略 (根據我們定義的JSON結構)"
+      },
+      {
+        "name": "extracted_factors_json",
+        "type": "JSON",
+        "description": "從 AI 回應中解析出的、促成該策略的關鍵投資因子列表"
+      },
+      {
+        "name": "confidence_score",
+        "type": "REAL",
+        "description": "AI 對其策略的信心評分 (如果有輸出)"
+      },
+      {
+        "name": "status",
+        "type": "TEXT",
+        "default": "SUCCESS",
+        "description": "此條記錄的狀態 (例如 SUCCESS, DATA_MISSING_PARTIAL, AI_ERROR, SKIPPED)"
+      },
+      {
+        "name": "error_message",
+        "type": "TEXT",
+        "description": "如果狀態不是 SUCCESS，記錄錯誤信息"
+      },
+      {
+        "name": "inserted_at_db_timestamp",
+        "type": "DATETIME",
+        "constraints": "NOT NULL",
+        "description": "此記錄插入數據庫的 UTC 時間戳"
+      }
+    ],
+    "primary_keys": ["simulation_id", "simulation_timestamp"],
+    "indexes": [
+      {"name": "idx_judgments_sim_id_status", "columns": ["simulation_id", "status"]},
+      {"name": "idx_judgments_model_confidence", "columns": ["ai_model_name", "confidence_score"]}
+    ]
+  }
 }
