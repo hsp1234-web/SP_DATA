@@ -5,3 +5,4 @@
 
 from .base_connector import BaseConnector
 from .dbnomics_connector import DBnomicsConnector
+from .finmind_connector import FinMindConnector

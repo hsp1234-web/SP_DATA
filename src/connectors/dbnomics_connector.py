@@ -191,9 +191,26 @@ class DBnomicsConnector(BaseConnector):
                 errors.append(f"Unexpected error for {series_id}: {str(e)}")
 
         if not all_data_frames:
-            final_error_message = f"No dataframes were successfully processed. Errors: {'; '.join(errors)}" if errors else "No dataframes processed and no specific errors."
-            logger.warning(f"[{self.source_name}] {final_error_message}")
-            return None, final_error_message
+            # 返回一個空的、但欄位正確的 DataFrame，並且沒有錯誤訊息
+            # (除非在 errors 列表中已經有其他 series 的 fetch/transform 錯誤)
+            final_error_message = None
+            if errors: # 如果之前處理其他series時已經有錯誤
+                final_error_message = f"No dataframes were successfully processed OR some series had errors. Errors: {'; '.join(errors)}"
+                logger.warning(f"[{self.source_name}] {final_error_message}")
+            else: # 完全沒有任何數據幀，也沒有任何錯誤
+                logger.warning(
+                    f"[{self.source_name}] 未能成功處理任何系列數據或所有系列數據均為空，將返回一個空的 DataFrame。"
+                )
+
+            # 我們需要一個方法或屬性來獲取標準欄位
+            # 這裡我們先假設有一個 self.get_canonical_columns() 的輔助方法
+            # 或者直接從 schemas.json (理想情況) 或硬編碼
+            canonical_columns = [
+                'metric_date', 'metric_name', 'metric_value',
+                'source_api', 'last_updated_timestamp'
+            ]
+            # 如果有 errors，那麼 error message 應該包含它們，即使我們返回空DF
+            return pd.DataFrame(columns=canonical_columns), final_error_message # Return error message if any errors occurred for other series
 
         try:
             concatenated_df = pd.concat(all_data_frames, ignore_index=True)
@@ -204,4 +221,6 @@ class DBnomicsConnector(BaseConnector):
             return concatenated_df, None
         except Exception as e:
             logger.exception(f"[{self.source_name}] Failed to concatenate dataframes: {e}")
-            return None, f"Failed to concatenate dataframes: {str(e)}. Individual errors: {'; '.join(errors)}"
+            # 如果 concat 本身失敗，之前的 errors 也應該被包含
+            error_summary = f"Failed to concatenate dataframes: {str(e)}. Previous errors: {'; '.join(errors) if errors else 'None'}"
+            return None, error_summary

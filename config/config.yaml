@@ -7,7 +7,7 @@ api_keys:
   # 強烈建議使用環境變數或 secrets management 工具來管理金鑰，而非直接寫入此文件
   fmp_api_key: "YOUR_FMP_KEY_HERE"
   eodhd_api_key: "YOUR_EODHD_KEY_HERE"
-  finmind_api_key: "YOUR_FINMIND_KEY_HERE" # FinMind 可能需要 token
+  finmind_api_token: "YOUR_FINMIND_TOKEN_HERE" # FinMind API Token
   alpaca_api_key: "YOUR_ALPACA_KEY_HERE"
   alpaca_api_secret: "YOUR_ALPACA_SECRET_HERE"
   alpha_vantage_api_key: "YOUR_ALPHA_VANTAGE_KEY_HERE"
