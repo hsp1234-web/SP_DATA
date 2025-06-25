@@ -409,7 +409,31 @@ class FinMindConnector(BaseConnector):
             return raw_df, None
 
         # TODO: Add other data_types like 'financial_statement'
-        err_msg = f"FinMindConnector: 不支持的 data_type '{data_type}'"
+        elif data_type == "income_statement":
+            # This case is handled by get_income_statement directly calling transform_financials_to_canonical
+            # However, if DataManager were to call fetch_data(data_type="income_statement", ...)
+            # then transform_to_canonical(raw_df, data_type="income_statement", ...)
+            # this path would be taken.
+            stock_id = kwargs.get("stock_id")
+            # ... (similar logic as stock_price to get necessary params for transform_financials_to_canonical)
+            # For now, this generic fetch_data might not be the primary way to get financials.
+            # The specific get_income_statement is clearer.
+            # This is more of a placeholder for strict BaseConnector compliance.
+            # We assume raw_df is already fetched.
+            # The main purpose of this generic fetch_data is to return the raw_df for the specific data_type.
+            # The raw_df for financials is fetched by _fetch_data_internal.
+            # So, if we are here, it implies _fetch_data_internal was already called.
+            # This part needs careful design if we want DataManager to use these generic methods for all types.
+            # For now, let's assume if data_type is 'income_statement', the raw_df is already what we need.
+            # This method's primary role is to return the raw data (which is already a DataFrame for FinMind).
+            # The error checking for parameters should ideally be in the specific get_X methods.
+            # This is simplified for now.
+            if not isinstance(kwargs.get("raw_df_for_transform"), pd.DataFrame): # A bit of a hack for this example
+                 return None, "通用 fetch_data for financials 期望 raw_df_for_transform (DataFrame) in kwargs"
+            return kwargs.get("raw_df_for_transform"), None
+
+
+        err_msg = f"FinMindConnector: 不支持的 data_type '{data_type}' in fetch_data"
         self.logger.error(err_msg)
         return None, err_msg
 
@@ -425,27 +449,53 @@ class FinMindConnector(BaseConnector):
             self.logger.error(err_msg)
             return None, err_msg
 
+        stock_id = kwargs.get("stock_id")
+        if not stock_id: # Try to infer from DataFrame if possible
+            if 'security_id' in raw_data.columns and not raw_data.empty:
+                 stock_id = raw_data['security_id'].iloc[0]
+            elif 'stock_id' in raw_data.columns and not raw_data.empty: # FinMind specific before rename
+                 stock_id = raw_data['stock_id'].iloc[0]
+
+        # If raw_data is empty, stock_id might not be inferable, but transform methods handle empty raw_df.
+        if not stock_id and not raw_data.empty:
+            err_msg = f"轉換 {data_type} 數據需要 stock_id，但未在參數中提供或從原始數據 DataFrame 中獲取。"
+            self.logger.error(f"FinMindConnector: {err_msg}")
+            return None, err_msg
+        elif not stock_id and raw_data.empty: # If df is empty and no stock_id, use placeholder
+             stock_id = "Unknown"
+
+
         if data_type == "stock_price":
-            stock_id = kwargs.get("stock_id")
-            if not stock_id: # Try to infer from DataFrame if possible
-                if 'security_id' in raw_data.columns and not raw_data.empty:
-                     stock_id = raw_data['security_id'].iloc[0]
-                elif 'stock_id' in raw_data.columns and not raw_data.empty: # FinMind specific before rename
-                     stock_id = raw_data['stock_id'].iloc[0]
-
-            if not stock_id and not raw_df.empty: # If still no stock_id but df is not empty (implies it's an issue)
-                err_msg = "轉換股價數據需要 stock_id，但未在參數中提供或從原始數據 DataFrame 中獲取。"
-                self.logger.error(f"FinMindConnector: {err_msg}")
-                return None, err_msg
-            elif raw_df.empty and not stock_id: # If df is empty and no stock_id, can't do much
-                 stock_id = "Unknown" # Placeholder if df is empty and no stock_id passed
-
             return self.transform_stock_price_to_canonical(raw_df=raw_data, stock_id=stock_id)
+        elif data_type == "income_statement":
+            return self.transform_financials_to_canonical(raw_df=raw_data, stock_id=stock_id, statement_type="income_statement")
+        elif data_type == "balance_sheet":
+            return self.transform_financials_to_canonical(raw_df=raw_data, stock_id=stock_id, statement_type="balance_sheet")
 
         # TODO: Add other data_types
         err_msg = f"FinMindConnector: 不支持的 data_type '{data_type}' 用於轉換"
         self.logger.error(err_msg)
         return None, err_msg
+
+    # --- 新增獲取資產負債表的功能 ---
+    def get_balance_sheet(self, stock_id: str, start_date: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+        """
+        獲取台股資產負債表 (Balance Sheet) 並進行標準化轉換。
+        FinMind API (taiwan_stock_balance_sheet) 通常按 start_date 獲取該日期之後的所有數據。
+        """
+        self.logger.info(f"FinMindConnector: 獲取股票 {stock_id} 從 {start_date} 開始的資產負債表數據。")
+        fetch_params = {'stock_id': stock_id, 'start_date': start_date}
+
+        raw_df = self._fetch_data_internal(
+            api_method_name='taiwan_stock_balance_sheet',
+            **fetch_params
+        )
+
+        if raw_df.empty:
+            self.logger.warning(f"FinMindConnector: 未能從 API 獲取股票 {stock_id} (自 {start_date}) 的資產負債表數據，或返回數據為空。")
+            return pd.DataFrame(columns=self._get_canonical_financials_columns()), None
+
+        return self.transform_financials_to_canonical(raw_df=raw_df, stock_id=stock_id, statement_type="balance_sheet")
 
     # 未來可以繼續在此擴充 fetch_tw_income_statement, transform_income_statement_to_canonical 等方法...
 ```

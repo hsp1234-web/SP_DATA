@@ -220,7 +220,42 @@ def prefill_dim_financial_metric(con: duckdb.DuckDBPyConnection):
             "source_name": "finmind", "source_metric_name": "基本每股盈餘",
             "canonical_metric_name": "eps", "metric_description": "Basic earnings per share"
         },
-        # TODO: Add more metrics for balance sheet and cash flow as they are implemented
+        # Assets - Balance Sheet
+        {
+            "source_name": "finmind", "source_metric_name": "流動資產", # Example, actual name might vary
+            "canonical_metric_name": "current_assets", "metric_description": "Total current assets"
+        },
+        {
+            "source_name": "finmind", "source_metric_name": "非流動資產", # Example
+            "canonical_metric_name": "non_current_assets", "metric_description": "Total non-current assets"
+        },
+        {
+            "source_name": "finmind", "source_metric_name": "資產總計",  # Or "資產總額"
+            "canonical_metric_name": "total_assets", "metric_description": "Total assets"
+        },
+        # Liabilities - Balance Sheet
+        {
+            "source_name": "finmind", "source_metric_name": "流動負債", # Example
+            "canonical_metric_name": "current_liabilities", "metric_description": "Total current liabilities"
+        },
+        {
+            "source_name": "finmind", "source_metric_name": "非流動負債", # Example
+            "canonical_metric_name": "non_current_liabilities", "metric_description": "Total non-current liabilities"
+        },
+        {
+            "source_name": "finmind", "source_metric_name": "負債總計", # Or "負債總額"
+            "canonical_metric_name": "total_liabilities", "metric_description": "Total liabilities"
+        },
+        # Equity - Balance Sheet
+        {
+            "source_name": "finmind", "source_metric_name": "歸屬於母公司業主之權益合計", # Common full name
+            "canonical_metric_name": "equity_attributable_to_owners_of_parent", "metric_description": "Equity attributable to owners of parent"
+        },
+        {
+            "source_name": "finmind", "source_metric_name": "權益總計", # Or "權益總額"
+            "canonical_metric_name": "total_equity", "metric_description": "Total equity"
+        }
+        # TODO: Add more metrics for cash flow as they are implemented
     ]
 
     now_utc = datetime.now(timezone.utc)
