@@ -1,6 +1,7 @@
 project:
-  # 專案數據庫的根路徑，請根據您的 Google Drive 掛載情況修改
-  database_path: "/content/drive/MyDrive/FinancialData/databases/" # 修改路徑以包含 'databases' 子目錄
+  # DuckDB 資料庫文件的完整路徑。請根據您的 Google Drive 掛載情況修改。
+  # 例如: "/content/drive/MyDrive/FinancialData/databases/financial_data.duckdb"
+  database_path: "/content/drive/MyDrive/FinancialData/databases/financial_data.duckdb"
 
 api_keys:
   # 請在此處填寫您的 API 金鑰
