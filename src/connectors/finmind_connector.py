@@ -473,9 +473,14 @@ class FinMindConnector(BaseConnector):
             return self.transform_financials_to_canonical(raw_df=raw_data, stock_id=stock_id, statement_type="balance_sheet")
         elif data_type == "cash_flow_statement":
             return self.transform_financials_to_canonical(raw_df=raw_data, stock_id=stock_id, statement_type="cash_flow_statement")
+        elif data_type == "institutional_trades":
+            return self.transform_chip_data_to_canonical(raw_df=raw_data, stock_id=stock_id, data_category="institutional_trades")
+        elif data_type == "margin_trading":
+            return self.transform_chip_data_to_canonical(raw_df=raw_data, stock_id=stock_id, data_category="margin_trading")
+        elif data_type == "shareholding":
+            return self.transform_chip_data_to_canonical(raw_df=raw_data, stock_id=stock_id, data_category="shareholding")
 
-        # TODO: Add other data_types
-        err_msg = f"FinMindConnector: 不支持的 data_type '{data_type}' 用於轉換"
+        err_msg = f"FinMindConnector: 不支持的 data_type '{data_type}' 用於通用轉換 transform_to_canonical"
         self.logger.error(err_msg)
         return None, err_msg
 
@@ -518,6 +523,231 @@ class FinMindConnector(BaseConnector):
             return pd.DataFrame(columns=self._get_canonical_financials_columns()), None
 
         return self.transform_financials_to_canonical(raw_df=raw_df, stock_id=stock_id, statement_type="cash_flow_statement")
+
+    # --- 新增獲取現金流量表的功能 ---
+    def get_cash_flow_statement(self, stock_id: str, start_date: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+        """
+        獲取台股現金流量表 (Cash Flow Statement) 並進行標準化轉換。
+        FinMind API (taiwan_stock_cash_flows_statement) 通常按 start_date 獲取該日期之後的所有數據。
+        """
+        self.logger.info(f"FinMindConnector: 獲取股票 {stock_id} 從 {start_date} 開始的現金流量表數據。")
+        fetch_params = {'stock_id': stock_id, 'start_date': start_date}
+
+        raw_df = self._fetch_data_internal(
+            api_method_name='taiwan_stock_cash_flows_statement', # Correct API method name
+            **fetch_params
+        )
+
+        if raw_df.empty:
+            self.logger.warning(f"FinMindConnector: 未能從 API 獲取股票 {stock_id} (自 {start_date}) 的現金流量表數據，或返回數據為空。")
+            return pd.DataFrame(columns=self._get_canonical_financials_columns()), None
+
+        return self.transform_financials_to_canonical(raw_df=raw_df, stock_id=stock_id, statement_type="cash_flow_statement")
+
+    # --- 籌碼面數據獲取與轉換 ---
+
+    def _get_canonical_chip_columns(self) -> List[str]:
+        """返回籌碼數據標準模型 (fact_tw_chip_data) 的欄位列表。"""
+        return [
+            "transaction_date", "security_id", "metric_name",
+            "metric_sub_category", "metric_value", "source_api",
+            "last_updated_in_db_timestamp"
+        ]
+
+    def transform_chip_data_to_canonical(self, raw_df: pd.DataFrame, stock_id: str, data_category: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+        """
+        將來自 FinMind 的「寬格式」籌碼 DataFrame 轉換為符合 'fact_tw_chip_data' schema 的「長格式」。
+
+        Args:
+            raw_df (pd.DataFrame): FinMind API 返回的原始籌碼 DataFrame。
+            stock_id (str): 股票代碼。 (注意: FinMind籌碼數據通常已有stock_id列)
+            data_category (str): 籌碼數據類別，例如 'institutional_trades', 'margin_trading', 'shareholding'。
+                                 用於指導如何解析和 melt 不同的原始 DataFrame 結構。
+        Returns:
+            Tuple[Optional[pd.DataFrame], Optional[str]]: 標準化後的 DataFrame 及錯誤信息。
+        """
+        self.logger.debug(f"FinMindConnector: 開始轉換股票 {stock_id} 的 {len(raw_df)} 筆 {data_category} 籌碼數據。")
+        if raw_df.empty:
+            self.logger.info(f"FinMindConnector: 原始 {data_category} 數據為空 for {stock_id}，無需轉換。")
+            return pd.DataFrame(columns=self._get_canonical_chip_columns()), None
+
+        try:
+            canonical_df = raw_df.copy()
+
+            # 通用欄位重命名
+            if 'date' in canonical_df.columns:
+                canonical_df.rename(columns={'date': 'transaction_date'}, inplace=True)
+            if 'stock_id' in canonical_df.columns:
+                 canonical_df.rename(columns={'stock_id': 'security_id'}, inplace=True)
+
+            canonical_df['transaction_date'] = pd.to_datetime(canonical_df['transaction_date']).dt.date
+
+            melted_dfs = []
+
+            if data_category == 'institutional_trades':
+                # FinMind taiwan_stock_institutional_investors_buy_sell returns:
+                # date, stock_id, name (法人名稱), buy (股), sell (股)
+                # We need to map 'name' to 'metric_sub_category' and 'buy'/'sell' to 'metric_name' parts.
+                if 'name' not in canonical_df.columns or not all(col in canonical_df.columns for col in ['buy', 'sell']):
+                    return None, f"institutional_trades 數據缺少 'name', 'buy', 或 'sell' 欄位 for {stock_id}"
+
+                # 計算淨買賣超 (股數)
+                canonical_df['net_shares'] = pd.to_numeric(canonical_df['buy'], errors='coerce') - pd.to_numeric(canonical_df['sell'], errors='coerce')
+
+                id_vars = ['transaction_date', 'security_id', 'name']
+                value_vars_map = { # map original column to canonical metric_name stem
+                    'buy': 'institutional_buy_shares',
+                    'sell': 'institutional_sell_shares',
+                    'net_shares': 'institutional_net_shares'
+                }
+                # FinMind 的 name 通常是英文，例如 Foreign_Investor, Investment_Trust, Dealer_Proprietary, Dealer_Hedging
+                # 我們可以直接使用這些作為 metric_sub_category，或進行映射
+                sub_category_col = 'name'
+
+                for finmind_col, metric_name_stem in value_vars_map.items():
+                    if finmind_col in canonical_df.columns:
+                        temp_df = canonical_df[id_vars + [finmind_col]].copy()
+                        temp_df.rename(columns={finmind_col: 'metric_value', sub_category_col: 'metric_sub_category'}, inplace=True)
+                        temp_df['metric_name'] = metric_name_stem
+                        melted_dfs.append(temp_df)
+
+            elif data_category == 'margin_trading':
+                # FinMind taiwan_stock_margin_purchase_short_sale returns columns like:
+                # MarginPurchaseLimit, MarginPurchaseTodayBalance, MarginPurchaseUsedAmount,
+                # ShortSaleLimit, ShortSaleTodayBalance, ShortSaleUsedAmount, etc.
+                id_vars = ['transaction_date', 'security_id']
+                value_vars = [col for col in canonical_df.columns if col not in id_vars + ['stock_name', 'Note', 'type']] # type is sometimes present
+
+                if not value_vars:
+                     return None, f"margin_trading 數據未找到可 melt 的指標欄位 for {stock_id}"
+
+                melted_df = canonical_df.melt(
+                    id_vars=id_vars,
+                    value_vars=value_vars,
+                    var_name='metric_name',
+                    value_name='metric_value'
+                )
+                # metric_name 會是 MarginPurchaseLimit 等，可以考慮轉換為蛇形命名
+                melted_df['metric_name'] = melted_df['metric_name'].apply(lambda x: re.sub(r'(?<!^)(?=[A-Z])', '_', x).lower())
+                melted_df['metric_sub_category'] = '' # No sub-category for these metrics typically
+                melted_dfs.append(melted_df)
+
+            elif data_category == 'shareholding':
+                # FinMind taiwan_stock_shareholding returns:
+                # date, stock_id, stock_name, ForeignInvestmentSharesRatio, DomesticInstitutionSharesRatio etc.
+                # Also InternationalStrategicTraditional, ForeignInvestmentShares, DomesticInstitutionShares etc.
+                id_vars = ['transaction_date', 'security_id']
+                # Example value_vars, need to confirm actual columns from FinMind and decide which ones to keep
+                value_vars_candidates = [
+                    'ForeignInvestmentSharesRatio', 'DomesticInstitutionSharesRatio',
+                    'ForeignInvestmentShares', 'DomesticInstitutionShares',
+                    'ForeignNaturalPersonSharesRatio', 'ForeignNaturalPersonShares',
+                    'TrustSharesRatio', 'TrustShares',
+                    'DealerSharesRatio', 'DealerShares',
+                    'DomesticStrategicTraditionalSharesRatio', 'DomesticStrategicTraditionalShares',
+                    'GovernmentAgencySharesRatio', 'GovernmentAgencyShares',
+                    'FinancialInstitutionSharesRatio', 'FinancialInstitutionShares'
+                    # Add more as needed
+                ]
+                value_vars = [col for col in value_vars_candidates if col in canonical_df.columns]
+
+                if not value_vars:
+                     return None, f"shareholding 數據未找到可 melt 的指標欄位 for {stock_id}"
+
+                melted_df = canonical_df.melt(
+                    id_vars=id_vars,
+                    value_vars=value_vars,
+                    var_name='metric_name',
+                    value_name='metric_value'
+                )
+                melted_df['metric_name'] = melted_df['metric_name'].apply(lambda x: re.sub(r'(?<!^)(?=[A-Z])', '_', x).lower())
+                melted_df['metric_sub_category'] = ''
+                melted_dfs.append(melted_df)
+            else:
+                return None, f"未知的籌碼數據類別: {data_category}"
+
+            if not melted_dfs: # If no data was processed for any category
+                 self.logger.warning(f"FinMindConnector: 未能從 {data_category} 類別的原始數據中提取任何指標 for {stock_id}.")
+                 return pd.DataFrame(columns=self._get_canonical_chip_columns()), None
+
+            final_df = pd.concat(melted_dfs, ignore_index=True)
+
+            # 通用後處理
+            final_df['metric_value'] = pd.to_numeric(final_df['metric_value'], errors='coerce')
+            final_df['source_api'] = self.source_name
+            final_df['last_updated_in_db_timestamp'] = datetime.now(timezone.utc)
+
+            # 確保欄位和清洗
+            output_columns = self._get_canonical_chip_columns()
+            df_to_return = pd.DataFrame(columns=output_columns)
+            for col in output_columns:
+                if col in final_df.columns:
+                    df_to_return[col] = final_df[col]
+                elif col == 'metric_sub_category': # Ensure it exists with default if not created by specific logic
+                    df_to_return[col] = ''
+                else:
+                    df_to_return[col] = None
+
+            # 關鍵欄位清洗 (metric_sub_category 允許為空字符串，但主鍵中不能為純粹的NULL)
+            critical_cols_for_dropna = ['transaction_date', 'security_id', 'metric_name']
+            df_to_return.dropna(subset=critical_cols_for_dropna, inplace=True)
+
+            # Fill NaN in metric_sub_category with default empty string if it's part of PK and was not set
+            if 'metric_sub_category' in df_to_return.columns:
+                 df_to_return['metric_sub_category'].fillna('', inplace=True)
+
+
+            if df_to_return.empty and not raw_df.empty:
+                 self.logger.warning(f"FinMindConnector: 股票 {stock_id} 的 {data_category} 數據在轉換/清洗後變為空。")
+
+            self.logger.info(f"FinMindConnector: 成功轉換股票 {stock_id} 的 {len(df_to_return)} 筆 {data_category} 標準化籌碼記錄。")
+            return df_to_return, None
+
+        except Exception as e:
+            error_msg = f"FinMindConnector: 轉換股票代碼 {stock_id} 的 {data_category} 籌碼數據時失敗: {e}"
+            self.logger.error(error_msg, exc_info=True)
+            return None, error_msg
+
+    def get_institutional_trades(self, stock_id: str, start_date: str, end_date: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+        self.logger.info(f"FinMindConnector: 獲取股票 {stock_id} 從 {start_date} 到 {end_date} 的三大法人買賣超數據。")
+        raw_df = self._fetch_data_internal(
+            api_method_name='taiwan_stock_institutional_investors_buy_sell',
+            stock_id=stock_id,
+            start_date=start_date,
+            end_date=end_date
+        )
+        if raw_df.empty:
+            self.logger.warning(f"FinMindConnector: 未能從 API 獲取股票 {stock_id} 的三大法人買賣超數據。")
+            return pd.DataFrame(columns=self._get_canonical_chip_columns()), None
+        return self.transform_chip_data_to_canonical(raw_df, stock_id, data_category='institutional_trades')
+
+    def get_margin_trading(self, stock_id: str, start_date: str, end_date: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+        self.logger.info(f"FinMindConnector: 獲取股票 {stock_id} 從 {start_date} 到 {end_date} 的融資融券餘額數據。")
+        raw_df = self._fetch_data_internal(
+            api_method_name='taiwan_stock_margin_purchase_short_sale',
+            stock_id=stock_id,
+            start_date=start_date,
+            end_date=end_date
+        )
+        if raw_df.empty:
+            self.logger.warning(f"FinMindConnector: 未能從 API 獲取股票 {stock_id} 的融資融券餘額數據。")
+            return pd.DataFrame(columns=self._get_canonical_chip_columns()), None
+        return self.transform_chip_data_to_canonical(raw_df, stock_id, data_category='margin_trading')
+
+    def get_shareholding(self, stock_id: str, start_date: str, end_date: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+        self.logger.info(f"FinMindConnector: 獲取股票 {stock_id} 從 {start_date} 到 {end_date} 的股權分散數據。")
+        # FinMind API for shareholding might be taiwan_stock_shareholding or other, need to verify exact name
+        # Assuming 'taiwan_stock_shareholding' for now based on previous context
+        raw_df = self._fetch_data_internal(
+            api_method_name='taiwan_stock_shareholding', # Verify this API method name
+            stock_id=stock_id,
+            start_date=start_date, # taiwan_stock_shareholding might take 'date' instead of 'start_date'/'end_date'
+            end_date=end_date     # Or it might return all historical data for a given date query
+        )
+        if raw_df.empty:
+            self.logger.warning(f"FinMindConnector: 未能從 API 獲取股票 {stock_id} 的股權分散數據。")
+            return pd.DataFrame(columns=self._get_canonical_chip_columns()), None
+        return self.transform_chip_data_to_canonical(raw_df, stock_id, data_category='shareholding')
 
     # 未來可以繼續在此擴充其他類型財報的獲取方法...
 ```

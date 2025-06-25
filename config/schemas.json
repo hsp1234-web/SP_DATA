@@ -131,5 +131,22 @@
       {"name": "idx_aihj_sim_run_id", "columns": ["simulation_run_id"]},
       {"name": "idx_aihj_model_confidence", "columns": ["ai_model_name_used", "confidence_score"]}
     ]
+  },
+  "fact_tw_chip_data": {
+    "description": "台灣股市籌碼面數據 (適用於 DuckDB)，採用長格式設計。",
+    "columns": [
+      { "name": "transaction_date", "type": "DATE", "constraints": "NOT NULL", "description": "交易日期或數據對應日期" },
+      { "name": "security_id", "type": "VARCHAR", "constraints": "NOT NULL", "description": "股票代碼" },
+      { "name": "metric_name", "type": "VARCHAR", "constraints": "NOT NULL", "description": "籌碼指標的標準化名稱" },
+      { "name": "metric_sub_category", "type": "VARCHAR", "constraints": "NOT NULL DEFAULT ''", "description": "指標子類別 (例如三大法人中的外資、投信、自營商，或融資融券的券商等)，無子類別時為空字串" },
+      { "name": "metric_value", "type": "DOUBLE", "description": "指標數值" },
+      { "name": "source_api", "type": "VARCHAR", "constraints": "NOT NULL", "description": "數據來源 API (固定為 finmind)" },
+      { "name": "last_updated_in_db_timestamp", "type": "TIMESTAMP WITH TIME ZONE", "constraints": "NOT NULL", "description": "記錄在數據庫中最後插入或更新的 UTC 時間戳" }
+    ],
+    "primary_keys": ["transaction_date", "security_id", "metric_name", "source_api", "metric_sub_category"],
+    "indexes": [
+      {"name": "idx_ftcd_security_date", "columns": ["security_id", "transaction_date"]},
+      {"name": "idx_ftcd_metric_subcat_date", "columns": ["metric_name", "metric_sub_category", "transaction_date"]}
+    ]
   }
 }

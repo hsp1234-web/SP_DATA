@@ -61,28 +61,28 @@ def build_create_table_sql(table_name: str, table_schema: Dict[str, Any]) -> str
     """根據 schema 構建 CREATE TABLE SQL 語句。"""
     columns_sql_parts = []
     for col_def in table_schema.get("columns", []):
-        col_name = f'"{col_def["name"]}"' # Always quote column names
+        col_name = f'"{col_def["name"]}"'
         col_type_key = col_def["type"].upper()
-        col_type_sql = TYPE_MAPPING.get(col_type_key, "VARCHAR") # Default to VARCHAR if type unknown
+        col_type_sql = TYPE_MAPPING.get(col_type_key, "VARCHAR")
 
-        constraints_str = ""
-        # Handle NOT NULL constraint specifically
-        if "NOT NULL" in col_def.get("constraints", "").upper():
-            constraints_str += " NOT NULL"
+        col_sql_part = f"{col_name} {col_type_sql}"
 
-        # Handle DEFAULT constraint specifically (e.g., "NOT NULL DEFAULT 1" or "DEFAULT 1")
-        # This is a simplified parser for DEFAULT; more complex defaults might need robust parsing.
         constraints_value = col_def.get("constraints", "")
-        if "DEFAULT" in constraints_value.upper():
-            # Assuming format like "DEFAULT value" or "NOT NULL DEFAULT value"
-            # Example: "NOT NULL DEFAULT 1" -> " DEFAULT 1 NOT NULL" (if NOT NULL also present)
-            # Example: "DEFAULT 'PENDING'" -> " DEFAULT 'PENDING'"
-            default_part = constraints_value.upper().split("DEFAULT", 1)[1].strip()
-            # Remove NOT NULL from default_part if it was already handled
-            default_part_for_sql = default_part.replace("NOT NULL", "").strip()
-            constraints_str = f" DEFAULT {default_part_for_sql}" + constraints_str # Add NOT NULL after default if it was there
 
-        columns_sql_parts.append(f"{col_name} {col_type_sql}{constraints_str}")
+        # Handle DEFAULT constraint
+        if "DEFAULT" in constraints_value.upper():
+            # Regex to find DEFAULT value, handling simple numbers and quoted strings
+            # This regex assumes default value is the first part after "DEFAULT " and before any other constraint like "NOT NULL"
+            match = re.search(r"DEFAULT\s+((?:'(?:[^']|'')*'|[^'\s]+))", constraints_value, re.IGNORECASE)
+            if match:
+                actual_default_value = match.group(1)
+                col_sql_part += f" DEFAULT {actual_default_value}"
+
+        # Handle NOT NULL constraint
+        if "NOT NULL" in constraints_value.upper():
+            col_sql_part += " NOT NULL"
+
+        columns_sql_parts.append(col_sql_part)
 
     # 主鍵約束
     primary_keys = table_schema.get("primary_keys", [])
