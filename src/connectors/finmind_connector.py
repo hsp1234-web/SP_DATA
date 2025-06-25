@@ -471,6 +471,8 @@ class FinMindConnector(BaseConnector):
             return self.transform_financials_to_canonical(raw_df=raw_data, stock_id=stock_id, statement_type="income_statement")
         elif data_type == "balance_sheet":
             return self.transform_financials_to_canonical(raw_df=raw_data, stock_id=stock_id, statement_type="balance_sheet")
+        elif data_type == "cash_flow_statement":
+            return self.transform_financials_to_canonical(raw_df=raw_data, stock_id=stock_id, statement_type="cash_flow_statement")
 
         # TODO: Add other data_types
         err_msg = f"FinMindConnector: 不支持的 data_type '{data_type}' 用於轉換"
@@ -497,7 +499,27 @@ class FinMindConnector(BaseConnector):
 
         return self.transform_financials_to_canonical(raw_df=raw_df, stock_id=stock_id, statement_type="balance_sheet")
 
-    # 未來可以繼續在此擴充 fetch_tw_income_statement, transform_income_statement_to_canonical 等方法...
+    # --- 新增獲取現金流量表的功能 ---
+    def get_cash_flow_statement(self, stock_id: str, start_date: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+        """
+        獲取台股現金流量表 (Cash Flow Statement) 並進行標準化轉換。
+        FinMind API (taiwan_stock_cash_flows_statement) 通常按 start_date 獲取該日期之後的所有數據。
+        """
+        self.logger.info(f"FinMindConnector: 獲取股票 {stock_id} 從 {start_date} 開始的現金流量表數據。")
+        fetch_params = {'stock_id': stock_id, 'start_date': start_date}
+
+        raw_df = self._fetch_data_internal(
+            api_method_name='taiwan_stock_cash_flows_statement', # Correct API method name
+            **fetch_params
+        )
+
+        if raw_df.empty:
+            self.logger.warning(f"FinMindConnector: 未能從 API 獲取股票 {stock_id} (自 {start_date}) 的現金流量表數據，或返回數據為空。")
+            return pd.DataFrame(columns=self._get_canonical_financials_columns()), None
+
+        return self.transform_financials_to_canonical(raw_df=raw_df, stock_id=stock_id, statement_type="cash_flow_statement")
+
+    # 未來可以繼續在此擴充其他類型財報的獲取方法...
 ```
 
 Một vài chỉnh sửa nhỏ trong quá trình tạo file:

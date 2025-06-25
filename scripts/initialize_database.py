@@ -254,8 +254,25 @@ def prefill_dim_financial_metric(con: duckdb.DuckDBPyConnection):
         {
             "source_name": "finmind", "source_metric_name": "權益總計", # Or "權益總額"
             "canonical_metric_name": "total_equity", "metric_description": "Total equity"
+        },
+        # Cash Flow Statement
+        {
+            "source_name": "finmind", "source_metric_name": "營業活動之淨現金流入(流出)", # Verify actual FinMind name
+            "canonical_metric_name": "net_cash_flow_from_operating_activities", "metric_description": "Net cash flow from operating activities"
+        },
+        {
+            "source_name": "finmind", "source_metric_name": "投資活動之淨現金流入(流出)", # Verify actual FinMind name
+            "canonical_metric_name": "net_cash_flow_from_investing_activities", "metric_description": "Net cash flow from investing activities"
+        },
+        {
+            "source_name": "finmind", "source_metric_name": "籌資活動之淨現金流入(流出)", # Verify actual FinMind name
+            "canonical_metric_name": "net_cash_flow_from_financing_activities", "metric_description": "Net cash flow from financing activities"
+        },
+        {
+            "source_name": "finmind", "source_metric_name": "本期現金及約當現金增加(減少)數", # Verify actual FinMind name
+            "canonical_metric_name": "net_change_in_cash_and_cash_equivalents", "metric_description": "Net change in cash and cash equivalents"
         }
-        # TODO: Add more metrics for cash flow as they are implemented
+        # TODO: Add more metrics as new statements/sources are added
     ]
 
     now_utc = datetime.now(timezone.utc)
