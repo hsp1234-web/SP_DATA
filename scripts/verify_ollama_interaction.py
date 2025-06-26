@@ -1,116 +1,101 @@
+# verify_ollama_interaction.py
+# 此腳本用於驗證與本地運行的 Ollama 服務的互動，
+# 透過向 /api/generate 端點發送請求來測試 Llama 3 模型的回應。
+
 import requests
 import json
-import logging
+import sys # 用於退出腳本
+import os # 用於從環境變數讀取模型名稱
 
-# 配置日誌記錄
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# --- 設定 ---
+OLLAMA_API_URL = "http://localhost:11434/api/generate"
+# 優先從環境變數 OLLAMA_MODEL_TO_TEST 讀取模型名稱，
+# 如果未設定，則使用 deploy_ollama_llama3.sh 中的預設模型名稱。
+DEFAULT_MODEL_NAME = "llama3:8b"
+MODEL_TO_TEST = os.getenv("OLLAMA_MODEL_TO_TEST", DEFAULT_MODEL_NAME)
 
-# 從 config.yaml 中讀取的 Ollama API 端點 (理想情況下，應從配置文件加載)
-OLLAMA_API_BASE_URL = "http://localhost:11434/api" # 您的 config.yaml 中的 ollama_api_base_url
-MODEL_NAME = "llama3:8b-instruct-q4_K_M" # 您的 config.yaml 中的 local_model_name
+TEST_PROMPT = "Why is the sky blue?"
+# 增加超時時間，因為模型首次加載和生成可能需要較長時間
+REQUEST_TIMEOUT = 180  # 秒 (3 分鐘)
 
-def check_ollama_server_status():
-    """檢查 Ollama 服務是否正在運行"""
-    try:
-        response = requests.get(OLLAMA_API_BASE_URL.replace("/api", "/"), timeout=5) # 檢查根路徑
-        if response.status_code == 200 and "Ollama is running" in response.text:
-            logger.info("Ollama server is running.")
-            return True
-        else:
-            logger.error(f"Ollama server status check failed. Status: {response.status_code}, Response: {response.text[:100]}")
-            return False
-    except requests.exceptions.ConnectionError:
-        logger.error("Connection to Ollama server failed. Is Ollama running?")
-        return False
-    except Exception as e:
-        logger.error(f"An unexpected error occurred while checking Ollama status: {e}")
-        return False
-
-def list_local_models():
-    """列出 Ollama 本地可用的模型"""
-    try:
-        response = requests.get(f"{OLLAMA_API_BASE_URL}/tags")
-        response.raise_for_status()
-        models = response.json().get("models", [])
-        logger.info("Available local models:")
-        if not models:
-            logger.info("  No local models found.")
-        for model in models:
-            logger.info(f"  - {model['name']} (Size: {model['size'] // (1024**3)} GB)")
-        return [m['name'] for m in models]
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error listing local models: {e}")
-        return []
-
-def simple_chat_test(model_name: str):
-    """對指定的模型進行一個簡單的問答測試"""
-    logger.info(f"Performing simple chat test with model: {model_name}")
+def main():
+    """主執行函數"""
+    print(f"開始驗證與 Ollama Llama 3 (模型: {MODEL_TO_TEST}) 的互動...")
+    print(f"目標 API 端點: {OLLAMA_API_URL}")
+    print(f"測試提示: \"{TEST_PROMPT}\"")
 
     payload = {
-        "model": model_name,
-        "prompt": "你好！請用繁體中文簡短介紹一下你自己。",
-        "stream": False, # 為了簡單起見，不使用流式傳輸
-        "options": {
-            "temperature": 0.7
-        }
+        "model": MODEL_TO_TEST,
+        "prompt": TEST_PROMPT,
+        "stream": False  # 獲取一次性完整回應
     }
 
     try:
-        response = requests.post(f"{OLLAMA_API_BASE_URL}/generate", json=payload)
-        response.raise_for_status()
+        print(f"\n正在向 Ollama 發送請求 (超時設定: {REQUEST_TIMEOUT} 秒)...")
+        # 使用 requests 套件發送 POST 請求
+        response = requests.post(OLLAMA_API_URL, json=payload, timeout=REQUEST_TIMEOUT)
 
+        # 檢查 HTTP 狀態碼
+        response.raise_for_status()  # 如果狀態碼是 4xx 或 5xx，則拋出 HTTPError
+
+        print("\n請求成功。正在解析回應...")
         response_data = response.json()
 
-        logger.info(f"Raw response from {model_name}:")
-        # 打印部分原始回應以供調試
-        # logger.info(json.dumps(response_data, indent=2, ensure_ascii=False))
+        print("\n--- Ollama API 完整 JSON 回應 ---")
+        # 使用 ensure_ascii=False 以正確顯示可能的非 ASCII 字符 (例如中文)
+        print(json.dumps(response_data, indent=2, ensure_ascii=False))
 
         if "response" in response_data:
-            ai_response = response_data["response"].strip()
-            logger.info(f"AI ({model_name}) Response: {ai_response}")
+            model_response_text = response_data["response"]
+            print("\n--- Llama 3 模型的回應內容 ---")
+            print(model_response_text)
 
-            # 檢查回應是否為空或僅包含特殊字符
-            if not ai_response or ai_response.isspace():
-                logger.warning("AI response is empty or contains only whitespace.")
-                return False
-            return True
+            # 檢查回應是否為空或僅包含空白字符
+            if model_response_text and model_response_text.strip():
+                print("\n驗證成功！Llama 3 模型已透過 Ollama API 正確回應。")
+            else:
+                print("\n警告：Llama 3 模型返回了空的回應或僅包含空白字符。")
+                print("這可能表示模型可以被調用，但對於此特定提示未生成有效內容。")
+                # 這種情況不一定視為完全失敗，但需要注意。
         else:
-            logger.error(f"Unexpected response structure from {model_name}. 'response' field missing.")
-            logger.error(f"Full response: {response_data}")
-            return False
+            print("\n錯誤：Ollama API 的回應中未找到 'response' 欄位。")
+            print("這可能表示模型未正確生成回應，或者 API 回應格式非預期。")
+            sys.exit(1) # 將此視為錯誤並退出
 
+    except requests.exceptions.ConnectionError as e:
+        print(f"\n錯誤：無法連接到 Ollama 服務 ({OLLAMA_API_URL})。")
+        print(f"請確保 Ollama 服務正在運行中，並且監聽在正確的地址和端口。")
+        print(f"您可以使用 'ollama serve' 命令啟動服務，並透過 'curl http://localhost:11434' 檢查其狀態。")
+        print(f"詳細錯誤: {e}")
+        sys.exit(1)
+    except requests.exceptions.Timeout as e:
+        print(f"\n錯誤：請求 Ollama API 超時 (超過 {REQUEST_TIMEOUT} 秒)。")
+        print(f"模型可能正在加載或推論時間過長。您可以嘗試在腳本中增加 REQUEST_TIMEOUT 值。")
+        print(f"同時，請檢查 Ollama 服務的日誌 (例如 ollama_server.log) 是否有錯誤或進度指示。")
+        print(f"詳細錯誤: {e}")
+        sys.exit(1)
     except requests.exceptions.HTTPError as e:
-        logger.error(f"HTTP error during chat test with {model_name}: {e}")
-        if e.response is not None:
-            logger.error(f"Response content: {e.response.text}")
-        return False
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Request exception during chat test with {model_name}: {e}")
-        return False
+        print(f"\n錯誤：Ollama API 請求返回 HTTP 錯誤 {e.response.status_code}。")
+        print(f"回應內容: {e.response.text}")
+        if e.response.status_code == 404 and "model" in e.response.text.lower() and "not found" in e.response.text.lower():
+            print(f"\n提示：HTTP 404 錯誤可能表示模型 '{MODEL_TO_TEST}' 未被正確拉取或名稱不正確。")
+            print(f"請使用 'ollama list' 命令檢查已下載的模型，並使用 'ollama pull {MODEL_TO_TEST}' 拉取。")
+        sys.exit(1)
+    except requests.exceptions.JSONDecodeError as e:
+        response_text_snippet = "無法獲取回應文本"
+        if 'response' in locals() and hasattr(response, 'text'):
+            response_text_snippet = response.text[:500] if response.text else "回應文本為空"
+
+        print(f"\n錯誤：無法解析來自 Ollama API 的 JSON 回應。")
+        print(f"可能是 API 未返回有效的 JSON，或者回應內容為空。")
+        print(f"狀態碼: {response.status_code if 'response' in locals() and hasattr(response, 'status_code') else '未知'}")
+        print(f"原始回應文本 (前500字符): {response_text_snippet}")
+        print(f"詳細錯誤: {e}")
+        sys.exit(1)
     except Exception as e:
-        logger.error(f"An unexpected error occurred during chat test: {e}")
-        return False
+        print(f"\n執行 verify_ollama_interaction.py 時發生未預期的錯誤：{e}")
+        print("詳細錯誤追蹤信息請見上方。")
+        sys.exit(1)
 
 if __name__ == "__main__":
-    logger.info("--- Ollama Interaction Verification Script ---")
-
-    if not check_ollama_server_status():
-        logger.info("Exiting due to Ollama server status check failure.")
-    else:
-        available_models = list_local_models()
-        if not available_models:
-            logger.warning(f"No local models found via Ollama API. Cannot proceed with chat test.")
-            logger.warning(f"Please ensure you have pulled the model, e.g., 'ollama pull {MODEL_NAME}'")
-        elif MODEL_NAME not in available_models:
-            logger.warning(f"Target model '{MODEL_NAME}' not found in local Ollama models.")
-            logger.warning(f"Available models are: {', '.join(available_models) if available_models else 'None'}")
-            logger.warning(f"Please ensure you have pulled the model: 'ollama pull {MODEL_NAME}'")
-        else:
-            logger.info(f"Target model '{MODEL_NAME}' found locally.")
-            if simple_chat_test(MODEL_NAME):
-                logger.info(f"Successfully interacted with model '{MODEL_NAME}'. Basic Ollama setup seems OK.")
-            else:
-                logger.error(f"Failed to get a valid response from model '{MODEL_NAME}'. Check Ollama logs and model availability.")
-
-    logger.info("--- Verification Script Finished ---")
+    main()
