@@ -135,3 +135,32 @@ cython_debug/
 # Colab/Drive specific
 .ipynb
 /content/drive/
+
+# Configuration files with secrets
+config.yaml
+secrets.yaml
+*.env
+*.ini # If they contain secrets
+
+# Local test configurations
+test_config.yaml
+# Sensitive data files
+*.csv # If they contain PII or sensitive financial data, be more specific if possible
+*.json # Same as above
+*.db
+*.duckdb
+*.sqlite
+*.sqlite3
+*.db-journal
+*.duckdb.wal
+
+# IDE specific cache/settings not already covered
+.idea/
+*.iml
+nbproject/
+
+# OS specific
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini

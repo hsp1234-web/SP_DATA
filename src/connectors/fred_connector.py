@@ -1,168 +1,230 @@
 from fredapi import Fred
 import pandas as pd
-from typing import List, Dict, Any, Tuple, Optional
-from datetime import datetime, timezone
+import time
 import logging
-import os # For accessing API key from environment variable
+from datetime import datetime, timezone, date # Added date
+from typing import List, Dict, Any, Tuple, Optional
+import os
 
-try:
-    from .base import BaseConnector
-except ImportError:
-    if __name__ == '__main__': # For standalone testing
-        from base import BaseConnector
-    else:
-        raise
+# Use a module-level logger
+logger = logging.getLogger(__name__)
 
-class FredConnector(BaseConnector):
+# Define a conservative request interval for FRED if not specified by RPM
+_MIN_REQUEST_INTERVAL_FRED = 0.5 # fredapi 的隱含速率限制 (如果使用金鑰，通常是120RPM，即0.5s/req)
+
+class FredConnector:
     """
     使用 fredapi 函式庫從 FRED (Federal Reserve Economic Data) 獲取經濟數據。
+    包含讀取設定檔、速率控制、統一錯誤處理。
     """
 
-    def __init__(self, config: Dict[str, Any], logger_instance: Optional[logging.Logger] = None):
-        if logger_instance:
-            self.logger = logger_instance
-        else:
-            self.logger = logging.getLogger(f"project_logger.{self.__class__.__name__}")
-            if not self.logger.handlers and not logging.getLogger().hasHandlers():
-                self.logger.addHandler(logging.NullHandler())
-                self.logger.debug(f"Logger for {self.__class__.__name__} configured with NullHandler for atomic script.")
+    def __init__(self, api_config: Dict[str, Any]):
+        """
+        初始化 FredConnector。
 
-        super().__init__(config, source_api_name="FRED")
+        Args:
+            api_config (Dict[str, Any]): 包含此 API 設定的字典。
+                                         應包含 'api_key' (可選，但建議) 和 'requests_per_minute'。
+                                         例如:
+                                         {
+                                             "api_key": "YOUR_FRED_API_KEY", // 或從環境變數讀取
+                                             "requests_per_minute": 120
+                                         }
+        """
+        # API 金鑰可以來自 config，或從環境變數 FRED_API_KEY (fredapi 預設行為)
+        self.api_key = api_config.get("api_key", os.getenv("FRED_API_KEY"))
 
-        self.api_key_env_var = self.config.get('api_endpoints', {}).get('fred', {}).get('api_key_env', 'FRED_API_KEY')
-        self.api_key = os.getenv(self.api_key_env_var)
+        if not self.api_key or self.api_key == "YOUR_FRED_API_KEY": # Check against template placeholder
+            logger.warning("FredConnector: FRED API 金鑰未在設定中明確提供，將依賴 fredapi 的預設行為 (可能從 FRED_API_KEY 環境變數讀取或無金鑰訪問)。")
+            # fredapi 即使沒有金鑰也能訪問某些數據，但有更嚴格的限制
+            self.api_key = None # 確保如果未提供，則 fredapi 使用其預設
 
-        if not self.api_key:
-            self.logger.critical(f"FRED API key not found in environment variable '{self.api_key_env_var}'. FREDConnector will not be able to fetch data.")
-            self.fred_client = None
-        else:
-            try:
-                self.fred_client = Fred(api_key=self.api_key)
-                self.logger.info("FredConnector initialized successfully with API key.")
-            except Exception as e:
-                self.logger.critical(f"Failed to initialize Fred client with API key: {e}", exc_info=True)
-                self.fred_client = None
+        self.requests_per_minute = api_config.get("requests_per_minute", 120) # Default from config.yaml.template
+        self._last_request_time = 0
 
-    def fetch_data(self, series_ids: List[str], start_date: Optional[str] = None, end_date: Optional[str] = None, **kwargs) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
-        if self.fred_client is None:
-            # Return an empty DataFrame with the expected schema and an error message
-            schema_cols = ['metric_date', 'metric_name', 'metric_value', 'source_api', 'data_snapshot_timestamp']
-            return pd.DataFrame(columns=schema_cols), "FRED client not initialized due to missing API key or initialization error."
+        rpm_interval = 60.0 / self.requests_per_minute if self.requests_per_minute > 0 else 0
+        self._min_request_interval = max(rpm_interval, _MIN_REQUEST_INTERVAL_FRED)
+
+        self.source_api_name = "FRED"
+
+        try:
+            # 如果 self.api_key 為 None，Fred() 會嘗試無金鑰訪問或讀取環境變數
+            self.fred_client = Fred(api_key=self.api_key)
+            logger.info(f"FredConnector 初始化完成。API Key: {'提供' if self.api_key else '未提供/依賴環境變數'} , RPM Config: {self.requests_per_minute}, Effective Interval: {self._min_request_interval:.2f}s")
+            # 可以嘗試一個簡單的測試調用來驗證金鑰 (如果提供的話)
+            # self.fred_client.get_series_info('GNPCA') # Example series
+        except Exception as e:
+            logger.error(f"FredConnector: 初始化 Fred client 時發生錯誤: {e}", exc_info=True)
+            self.fred_client = None # 標記 client 不可用
+
+    def _wait_for_rate_limit(self):
+        """等待直到可以安全地發出下一個 API 請求。"""
+        if self._min_request_interval == 0 or not self.fred_client:
+            return
+        now = time.time()
+        elapsed_time = now - self._last_request_time
+        wait_time = self._min_request_interval - elapsed_time
+        if wait_time > 0:
+            logger.debug(f"FRED 速率控制：等待 {wait_time:.2f} 秒。")
+            time.sleep(wait_time)
+        # self._last_request_time = time.time() # Update after request is made
+
+    def get_series_data(self, series_ids: List[str], start_date: Optional[str] = None, end_date: Optional[str] = None) -> pd.DataFrame:
+        """
+        獲取一個或多個 FRED 經濟數據序列。
+
+        Args:
+            series_ids (List[str]): FRED 序列 ID 列表 (例如 ["GDP", "UNRATE"])。
+            start_date (Optional[str]): 開始日期 (YYYY-MM-DD)。
+            end_date (Optional[str]): 結束日期 (YYYY-MM-DD)。
+
+        Returns:
+            pd.DataFrame: 包含請求序列數據的長格式 DataFrame，若失敗則為空 DataFrame。
+                          欄位: 'metric_date', 'security_id' (序列ID), 'metric_name', 'metric_value',
+                                'source_api', 'last_updated_timestamp'
+        """
+        if not self.fred_client:
+            logger.error("FredConnector: Fred client 未初始化。無法獲取數據。")
+            return self._create_empty_standard_df()
 
         if not series_ids:
-            schema_cols = ['metric_date', 'metric_name', 'metric_value', 'source_api', 'data_snapshot_timestamp']
-            return pd.DataFrame(columns=schema_cols), "No series_ids provided to FredConnector."
+            logger.warning("FredConnector: 未提供 series_ids。")
+            return self._create_empty_standard_df()
 
-        self.logger.info(f"Fetching FRED data for series_ids: {series_ids} from {start_date} to {end_date}.")
+        logger.info(f"FRED: 請求序列 {series_ids} 從 {start_date or '最早'} 到 {end_date or '最新'}。")
 
         all_series_data_list = []
-        error_messages = []
+        errors_encountered_log = []
 
         for series_id in series_ids:
-            try:
-                self.logger.debug(f"Fetching data for FRED series_id: {series_id}")
-                series_data = self.fred_client.get_series(series_id, observation_start=start_date, observation_end=end_date)
+            self._wait_for_rate_limit()
+            self._last_request_time = time.time() # 更新時間戳
 
-                if series_data.empty:
-                    self.logger.warning(f"No data returned for FRED series_id: {series_id} for the given date range.")
+            try:
+                logger.debug(f"FRED: 正在獲取序列 {series_id}")
+                # fredapi 的 get_series 返回一個 Pandas Series，索引是日期，值是序列值
+                series_data_raw = self.fred_client.get_series(
+                    series_id=series_id,
+                    observation_start=start_date,
+                    observation_end=end_date
+                )
+
+                if series_data_raw is None or series_data_raw.empty:
+                    logger.info(f"FRED: 序列 {series_id} 在指定日期範圍內無數據，或序列不存在。")
+                    continue # 跳到下一個序列
+
+                df_single_series = series_data_raw.reset_index()
+                df_single_series.columns = ['metric_date', 'metric_value']
+
+                df_single_series['metric_date'] = pd.to_datetime(df_single_series['metric_date']).dt.date
+                df_single_series['security_id'] = series_id # 使用 series_id 作為 security_id
+                df_single_series['metric_name'] = series_id # 指標名稱也用 series_id
+                df_single_series['source_api'] = self.source_api_name
+                df_single_series['last_updated_timestamp'] = datetime.now(timezone.utc)
+
+                df_single_series['metric_value'] = pd.to_numeric(df_single_series['metric_value'], errors='coerce')
+
+                if df_single_series['metric_value'].isnull().all() and not series_data_raw.empty : # If all values became NaN after conversion
+                    logger.info(f"FRED: 序列 {series_id} 的所有值在轉換為數字後均為 NaN (原始數據可能非數字)。")
+                    continue # Skip if no valid numeric data
+
+                # Do not dropna for metric_value here, as NaN can be a valid state for economic data (e.g. not yet reported)
+                # However, if metric_date itself is NaT after conversion, that's an issue.
+                df_single_series.dropna(subset=['metric_date'], inplace=True)
+                if df_single_series.empty:
+                    logger.info(f"FRED: 序列 {series_id} 在日期轉換/清洗後變為空。")
                     continue
 
-                df_series = series_data.reset_index()
-                df_series.columns = ['metric_date', 'metric_value']
+                all_series_data_list.append(df_single_series[self._get_standard_columns()])
+                logger.debug(f"FRED: 成功處理序列 {series_id}, {len(df_single_series)} 筆記錄。")
 
-                df_series['metric_date'] = pd.to_datetime(df_series['metric_date']).dt.date
-                df_series['metric_name'] = f"FRED/{series_id}"
-                df_series['source_api'] = self.source_api_name
-                df_series['data_snapshot_timestamp'] = datetime.now(timezone.utc)
-
-                df_series['metric_value'] = pd.to_numeric(df_series['metric_value'], errors='coerce')
-                df_series.dropna(subset=['metric_value'], inplace=True)
-
-                all_series_data_list.append(df_series[['metric_date', 'metric_name', 'metric_value', 'source_api', 'data_snapshot_timestamp']])
-                self.logger.debug(f"Successfully fetched and processed FRED series_id: {series_id}, {len(df_series)} rows.")
-
-            except Exception as e:
-                error_msg = f"Error fetching/processing FRED series_id {series_id}: {e}"
-                self.logger.error(error_msg, exc_info=True)
-                error_messages.append(error_msg)
+            except Exception as e: # fredapi 可能拋出各種錯誤，例如請求錯誤或數據問題
+                error_msg = f"FRED: 獲取或處理序列 {series_id} 時發生錯誤: {e}"
+                logger.error(error_msg, exc_info=True)
+                errors_encountered_log.append(f"{series_id}: {str(e)[:100]}") # Log a snippet of the error
+                # 不因單個序列失敗而中止整個請求，但記錄錯誤
 
         if not all_series_data_list:
-            final_error_message = "No data successfully fetched for any FRED series_ids."
-            if error_messages:
-                final_error_message += " Errors encountered: " + "; ".join(error_messages)
-            schema_cols = ['metric_date', 'metric_name', 'metric_value', 'source_api', 'data_snapshot_timestamp']
-            return pd.DataFrame(columns=schema_cols), final_error_message
+            log_msg = f"FRED: 未能為任何請求的序列 {series_ids} 成功獲取數據。"
+            if errors_encountered_log:
+                log_msg += f" 遇到的錯誤: {'; '.join(errors_encountered_log)}"
+            logger.warning(log_msg)
+            return self._create_empty_standard_df()
 
         final_df = pd.concat(all_series_data_list, ignore_index=True)
 
-        if final_df.empty: # Should be caught if all_series_data_list is empty
-            schema_cols = ['metric_date', 'metric_name', 'metric_value', 'source_api', 'data_snapshot_timestamp']
-            return pd.DataFrame(columns=schema_cols), "Combined FRED data is empty after processing all series."
+        if final_df.empty :
+             if not errors_encountered_log:
+                 logger.info(f"FRED: 最終合併的 DataFrame 為空 (所有請求的序列可能確實無數據)。")
+             else:
+                 logger.warning(f"FRED: 最終合併的 DataFrame 為空，且過程中發生錯誤: {'; '.join(errors_encountered_log)}")
 
-        self.logger.info(f"Successfully fetched and processed {len(final_df)} total records from FRED for series_ids: {series_ids}.")
+        logger.info(f"FRED: 共獲取並處理 {len(final_df)} 筆記錄 for {series_ids}。")
+        return final_df
 
-        full_error_summary = "; ".join(error_messages) if error_messages else None
-        return final_df, full_error_summary
+    def _get_standard_columns(self) -> List[str]:
+        """返回標準化的欄位列表。"""
+        return [
+            'metric_date', 'security_id', 'metric_name', 'metric_value',
+            'source_api', 'last_updated_timestamp'
+        ]
+
+    def _create_empty_standard_df(self) -> pd.DataFrame:
+        """創建一個帶有標準欄位的空 DataFrame。"""
+        return pd.DataFrame(columns=self._get_standard_columns())
 
 
+# 簡易測試 (如果直接運行此檔案)
 if __name__ == '__main__':
-    if not logging.getLogger().hasHandlers():
-        logging.basicConfig(level=logging.DEBUG,
-                            format='%(asctime)s - %(name)s [%(levelname)s] - %(module)s.%(funcName)s:%(lineno)d - %(message)s',
-                            handlers=[logging.StreamHandler(sys.stdout)])
+    import sys # Added sys for stdout handler
 
-    test_logger_fred = logging.getLogger("FredConnectorTestRun_Atomic_Main")
-    if not test_logger_fred.handlers:
-        ch_fred = logging.StreamHandler(sys.stdout)
-        ch_fred.setFormatter(logging.Formatter('%(asctime)s - %(name)s [%(levelname)s] - %(message)s'))
-        test_logger_fred.addHandler(ch_fred)
-        test_logger_fred.propagate = False
+    logging.basicConfig(level=logging.DEBUG,
+                        format='%(asctime)s - %(name)s [%(levelname)s] - %(module)s.%(funcName)s:%(lineno)d - %(message)s',
+                        handlers=[logging.StreamHandler(sys.stdout)])
 
-    sample_fred_config = {
-        "api_endpoints": { "fred": { "api_key_env": "FRED_API_KEY_TEST" } } # Use a distinct env var for testing
+    # 測試用的設定檔 (通常會從 config.yaml 讀取)
+    # 這裡假設 API 金鑰已設定在環境變數 FRED_API_KEY 中，或使用無金鑰訪問
+    test_api_config_fred = {
+        "api_key": os.getenv("FRED_API_KEY_TEST", os.getenv("FRED_API_KEY")), # 允許測試時用特定金鑰
+        "requests_per_minute": 100 # 測試時可以設低一些
     }
 
-    # For testing, explicitly set the API key if you have one, or mock Fred()
-    # IMPORTANT: Do not commit real API keys.
-    MOCK_API_KEY_FOR_TEST = "YOUR_TEST_API_KEY_OR_MOCK"
-    # os.environ["FRED_API_KEY_TEST"] = MOCK_API_KEY_FOR_TEST # FredConnector will pick this up
+    if not test_api_config_fred["api_key"]:
+        logger.warning("FredConnector 測試：未提供 API 金鑰，將嘗試無金鑰訪問。某些數據可能受限。")
 
-    if not os.getenv(sample_fred_config['api_endpoints']['fred']['api_key_env']):
-        # Fallback: Try the main key if test key not set (for user convenience during dev)
-        main_api_key_env = "FRED_API_KEY" # As defined in project_config.yaml template
-        if os.getenv(main_api_key_env):
-            test_logger_fred.warning(f"Test-specific FRED API key env var '{sample_fred_config['api_endpoints']['fred']['api_key_env']}' not set. Falling back to main key '{main_api_key_env}' for this test run.")
-            os.environ[sample_fred_config['api_endpoints']['fred']['api_key_env']] = os.getenv(main_api_key_env)
+
+    fred_connector = FredConnector(api_config=test_api_config_fred)
+
+    if fred_connector.fred_client is not None:
+        logger.info("\n--- 測試 FredConnector get_series_data ---")
+        series_to_test = ["GDP", "UNRATE", "DGS10", "NONEXISTENTFREDSERIES"] # 包含一個不存在的序列
+
+        df_fred_result = fred_connector.get_series_data(
+            series_ids=series_to_test,
+            start_date="2022-01-01",
+            end_date="2023-01-01"
+        )
+
+        if not df_fred_result.empty:
+            logger.info(f"FRED 測試結果 DataFrame shape: {df_fred_result.shape}")
+            logger.info(f"FRED 測試結果 DataFrame (前5筆):\n{df_fred_result.head().to_string()}")
+
+            unique_series_found = df_fred_result['security_id'].unique()
+            logger.info(f"獲取到的序列: {unique_series_found}")
+            if "GDP" in unique_series_found: logger.info("GDP 數據已獲取。")
+            if "UNRATE" in unique_series_found: logger.info("UNRATE 數據已獲取。")
+            if "NONEXISTENTFREDSERIES" not in unique_series_found:
+                logger.info("NONEXISTENTFREDSERIES 正確地未返回數據或被跳過。")
         else:
-             test_logger_fred.error(f"Cannot run FredConnector test: Neither test env var '{sample_fred_config['api_endpoints']['fred']['api_key_env']}' nor main env var '{main_api_key_env}' for FRED API key is set.")
-             sys.exit(1) # Exit if no key can be found for testing
+            logger.warning("FredConnector 測試未返回任何數據。")
 
-    test_logger_fred.info("--- Starting FredConnector Test ---")
-    fred_conn_test = FredConnector(config=sample_fred_config, logger_instance=test_logger_fred)
-
-    if fred_conn_test.fred_client is not None:
-        test_series_list = ["DGS10", "FEDFUNDS", "UNRATE", "NONEXISTENTSERIESXYZ"]
-        test_start = "2023-01-01"
-        test_end = "2023-02-28"
-
-        test_logger_fred.info(f"Testing fetch_data for series: {test_series_list} from {test_start} to {test_end}")
-        fred_df, fred_err = fred_conn_test.fetch_data(series_ids=test_series_list, start_date=test_start, end_date=test_end)
-
-        if fred_err:
-            test_logger_fred.warning(f"FredConnector test fetch_data completed with error(s): {fred_err}")
-
-        if fred_df is not None and not fred_df.empty:
-            test_logger_fred.info(f"FredConnector test fetch_data returned data. Shape: {fred_df.shape}")
-            test_logger_fred.info(f"Result head:\n{fred_df.head().to_string()}")
-            test_logger_fred.info(f"Result tail:\n{fred_df.tail().to_string()}")
-            actual_metrics = set(fred_df['metric_name'].unique())
-            test_logger_fred.info(f"Metrics returned: {actual_metrics}")
-            if "FRED/NONEXISTENTSERIESXYZ" not in actual_metrics:
-                test_logger_fred.info("Correctly did not return data for 'NONEXISTENTSERIESXYZ'.")
-        elif fred_df is not None and fred_df.empty:
-             test_logger_fred.warning("FredConnector test fetch_data returned an empty DataFrame. This might be due to all series failing or returning no data for the period.")
-        else: # fred_df is None
-             test_logger_fred.error(f"FredConnector test fetch_data returned None for data. Error was: {fred_err}")
+        logger.info("\n--- 測試 FredConnector (空序列列表) ---")
+        df_empty_series = fred_connector.get_series_data(series_ids=[])
+        if df_empty_series.empty:
+            logger.info("OK: 對於空序列列表，返回了空的 DataFrame。")
+        else:
+            logger.error(f"錯誤: 對於空序列列表，未返回空的 DataFrame。Shape: {df_empty_series.shape}")
     else:
-        test_logger_fred.error("FredConnector client (self.fred_client) was not initialized in test. API key issue likely.")
-    test_logger_fred.info("--- FredConnector Test Finished ---")
+        logger.error("FredConnector client (self.fred_client) 未初始化。測試無法繼續。")
+
+    logger.info("--- FredConnector 測試完成 ---")

@@ -1,42 +1,44 @@
 import pandas as pd
 import logging
-from typing import Dict, Any, Tuple, Optional, List # Added List
+import time # For rate limiting
+import re # For snake_case conversion
+from typing import Dict, Any, Tuple, Optional, List
 from FinMind.data import DataLoader
-from datetime import datetime, timezone # Added datetime, timezone
+from datetime import datetime, timezone
 
-# 模組級 logger
-# logger = logging.getLogger(__name__) # Using passed logger as per user's code in __init__
+# Use a module-level logger
+logger = logging.getLogger(__name__)
+# Removed: from .base_connector import BaseConnector
+# This connector will be self-contained as per the new request structure.
 
-from .base_connector import BaseConnector
-
-class FinMindConnector(BaseConnector):
+class FinMindConnector:
     """
-    全功能 FinMind API 連接器。
-    直接使用 FinMind 的 DataLoader 來獲取台灣市場的股價、財報、籌碼等多維度數據，
-    並將其轉換為系統內部統一的 Canonical Data Models。
+    用於從 FinMind API (透過其 SDK) 獲取台灣市場金融數據的連接器。
+    包含讀取設定檔、速率控制、統一錯誤處理。
     """
-    def __init__(self, config: Optional[Dict[str, Any]] = None, logger: Optional[logging.Logger] = None): # Made logger optional, config can be None
+    def __init__(self, api_config: Dict[str, Any]):
         """
-        初始化 FinMind 連接器，並使用 config 中的 token 登入。
+        初始化 FinMindConnector。
+
+        Args:
+            api_config (Dict[str, Any]): 包含此 API 設定的字典，
+                                         應包含 'api_key' (FinMind Token) 和 'requests_per_minute'。
+                                         例如:
+                                         {
+                                             "api_key": "YOUR_FINMIND_TOKEN",
+                                             "requests_per_minute": 500
+                                         }
         """
-        # We might not call super().__init__ if BaseConnector's __init__ is not relevant
-        # For now, let's call it to set up self.source_name and self.config,
-        # but we won't use its session or api_key in the traditional sense for FinMind.
-        # The actual FinMind token is handled separately.
-        # Pass a dummy api_key or None to super if it expects one.
-        super().__init__(api_key=None, source_name="finmind", config=config)
+        self.api_token = api_config.get("api_key")
+        if not self.api_token or self.api_token == "YOUR_FINMIND_API_TOKEN": # Check against template placeholder
+            logger.error("FinMind API Token (api_key) 未在設定中正確提供。")
+            raise ValueError("FinMind API Token 未設定或仍為預設值。")
 
-        if logger: # Use passed logger if available
-            self.logger = logger
-        else: # Otherwise, get a default logger for this module
-            self.logger = logging.getLogger(__name__)
+        self.requests_per_minute = api_config.get("requests_per_minute", 500) # Default from config.yaml.template
+        self._last_request_time = 0
+        self._min_request_interval = 60.0 / self.requests_per_minute if self.requests_per_minute > 0 else 0
 
-        self.api_token = self._get_config_value('api_keys.finmind_api_token')
-
-        if not self.api_token or self.api_token == "YOUR_FINMIND_TOKEN_HERE" or self.api_token.strip() == "":
-            err_msg = "FinMind API token 未在 config.yaml 中正確設定或為空。"
-            self.logger.error(err_msg)
-            raise ValueError(err_msg) # Raise ValueError as per instruction
+        self.source_name = "finmind" # For standardized logging or data tagging
 
         try:
             self.data_loader = DataLoader()

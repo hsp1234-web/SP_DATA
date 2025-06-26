@@ -18,6 +18,7 @@ duckdb = "0.9.2" # 固定版本
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
 pytest-mock = "^3.11.1"
+pytest-cov = ">=2.12.1,<7.0.0" # 新增 pytest-cov 並指定兼容 Python 3.8 的版本範圍
 
 [build-system]
 requires = ["poetry-core"]
