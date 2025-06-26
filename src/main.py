@@ -35,38 +35,39 @@ except NameError: # Fallback if __file__ is not defined (e.g. interactive, thoug
 DETAILED_LOG_FILENAME = os.path.join(PROJECT_ROOT, "market_briefing_log.txt")
 
 
-# PROJECT_ROOT is defined above.
-SOURCE_ROOT = str(Path(__file__).resolve().parent)  # This is /app/src
-
-# Explicitly add SOURCE_ROOT to sys.path to allow direct imports of modules within src
+# Add project root to sys.path to allow imports like 'from connectors.base import ...'
+# This assumes that 'connectors', 'engine', 'scripts' are directories directly under PROJECT_ROOT/src/
+# For the atomic script, main.py is in src/, so PROJECT_ROOT/src is effectively the "source root".
+# To import 'from connectors.base...', 'PROJECT_ROOT/src' must be in sys.path.
+# Path(__file__).resolve().parent gives the 'src' directory.
+SOURCE_ROOT = str(Path(__file__).resolve().parent)
 if SOURCE_ROOT not in sys.path:
     sys.path.insert(0, SOURCE_ROOT)
-    pre_init_logger.info(f"Inserted SOURCE_ROOT ({SOURCE_ROOT}) into sys.path for direct module imports from 'src'.")
+    pre_init_logger.info(f"Inserted SOURCE_ROOT ({SOURCE_ROOT}) into sys.path for relative imports.")
 
 pre_init_logger.info(f"main.py: __file__ is {Path(__file__).resolve() if '__file__' in locals() else 'not_defined'}")
 pre_init_logger.info(f"main.py: PROJECT_ROOT (parent of src): {PROJECT_ROOT}")
-pre_init_logger.info(f"main.py: SOURCE_ROOT (src directory, added to sys.path): {SOURCE_ROOT}")
+pre_init_logger.info(f"main.py: SOURCE_ROOT (src directory): {SOURCE_ROOT}")
 pre_init_logger.info(f"main.py: sys.path for module import: {sys.path}")
 
 
 # --- Module Imports ---
-# With SOURCE_ROOT in sys.path, modules directly under src should be importable.
+# These imports now assume that 'connectors', 'engine', 'scripts' are packages within 'src'.
+# The 'src' directory itself is made available by SOURCE_ROOT in sys.path.
 global_log = None
 init_global_log_function = None
 global_log_file_path_imported = None
 get_taipei_time_func_imported = None
 
 try:
-    # Direct imports for modules within src
+    # Corrected imports based on the new structure where these are submodules of 'src'
     from connectors.base import BaseConnector
     from connectors.fred_connector import FredConnector
     from connectors.nyfed_connector import NYFedConnector
     from connectors.yfinance_connector import YFinanceConnector
     from database.database_manager import DatabaseManager
     from engine.indicator_engine import IndicatorEngine
-    from ai_agent import RemoteAIAgent, AIDecisionModel # Direct import, expecting ai_agent.py in SOURCE_ROOT
 
-    # For scripts, if they are in a sub-package of src (e.g., src.scripts)
     from scripts.initialize_global_log import log_message, get_taipei_time, LOG_FILE_PATH as GLOBAL_LOG_FILE_PATH_FROM_MODULE, initialize_log_file
 
     global_log = log_message
@@ -281,156 +282,82 @@ def main():
                 global_log(f"Dealer Stress Index calculated. Shape: {stress_index_df.shape}. Latest date: {stress_index_df.index[-1].strftime('%Y-%m-%d') if not stress_index_df.empty else 'N/A'}", "INFO", logger_name="MainApp.main_flow")
                 global_log(f"Stress Index Tail:\n{stress_index_df.tail().to_string()}", "INFO", logger_name="MainApp.main_flow")
 
-                # --- Iterating through each date in stress_index_df for AI Decision ---
-                global_log(f"Starting AI decision generation for {len(stress_index_df)} historical dates.", "INFO", logger_name="MainApp.HistoricalLoop")
+                # Market Briefing Generation
+                briefing_date = stress_index_df.index[-1]
+                briefing_date_str = briefing_date.strftime('%Y-%m-%d')
+                latest_stress_value = stress_index_df['DealerStressIndex'].iloc[-1]
 
-                ai_api_call_count = 0
-                # Prepare AI Agent once if configured
-                ai_agent = None
-                ai_config = config.get('ai_service', {})
-                api_key_env = ai_config.get('api_key_env')
-                api_key = os.getenv(api_key_env) if api_key_env else None
-                api_endpoint = ai_config.get('api_endpoint')
-                default_model = ai_config.get('default_model')
-                ai_max_retries = ai_config.get('max_retries', 3)
-                ai_retry_delay = ai_config.get('retry_delay_seconds', 5)
-                ai_call_delay = ai_config.get('api_call_delay_seconds', 1.0)
+                stress_level_desc = "N/A"
+                if pd.notna(latest_stress_value):
+                    threshold_moderate = engine_params_from_config.get('stress_threshold_moderate', 40)
+                    threshold_high = engine_params_from_config.get('stress_threshold_high', 60)
+                    threshold_extreme = engine_params_from_config.get('stress_threshold_extreme', 80)
+                    if latest_stress_value >= threshold_extreme: stress_level_desc = f"{latest_stress_value:.2f} (極度緊張)"
+                    elif latest_stress_value >= threshold_high: stress_level_desc = f"{latest_stress_value:.2f} (高度緊張)"
+                    elif latest_stress_value >= threshold_moderate: stress_level_desc = f"{latest_stress_value:.2f} (中度緊張)"
+                    else: stress_level_desc = f"{latest_stress_value:.2f} (正常)"
 
-                if not api_key or not api_endpoint:
-                    global_log(f"AI Service API key (env var: {api_key_env}) or endpoint ({api_endpoint}) is not configured. Skipping AI decision loop.", "WARNING", logger_name="MainApp.HistoricalLoop")
-                else:
-                    ai_agent = RemoteAIAgent(
-                        api_key=api_key, api_endpoint=api_endpoint, default_model=default_model,
-                        max_retries=ai_max_retries, retry_delay_seconds=ai_retry_delay, api_call_delay_seconds=ai_call_delay
+                stress_trend_desc = "N/A"
+                if len(stress_index_df['DealerStressIndex'].dropna()) >= 2: # Need at least two points for diff
+                    change_in_stress = stress_index_df['DealerStressIndex'].diff().iloc[-1]
+                    if pd.notna(change_in_stress):
+                        stress_trend_desc = "上升" if change_in_stress > 0.1 else ("下降" if change_in_stress < -0.1 else "穩定")
+
+                # Accessing prepared data from the engine for briefing components
+                engine_prepared_full_df = indicator_engine_instance.df_prepared
+                latest_briefing_components_data = None
+                if engine_prepared_full_df is not None and not engine_prepared_full_df.empty:
+                    if briefing_date in engine_prepared_full_df.index:
+                        latest_briefing_components_data = engine_prepared_full_df.loc[briefing_date]
+                    else: # Fallback if exact date match fails (e.g. different time components)
+                        try:
+                           latest_briefing_components_data = engine_prepared_full_df.loc[briefing_date_str] # Try matching by string date
+                        except KeyError:
+                           global_log(f"Could not find briefing_date {briefing_date_str} or {briefing_date} in engine_prepared_df. Using last available row for briefing components.", "WARNING", logger_name="MainApp.Briefing")
+                           if not engine_prepared_full_df.empty: latest_briefing_components_data = engine_prepared_full_df.iloc[-1]
+
+                def get_formatted_value(series_data, component_key, value_format="{:.2f}", not_available_str="N/A"):
+                    if series_data is not None and component_key in series_data.index and pd.notna(series_data[component_key]):
+                        val = series_data[component_key]
+                        try:
+                            return value_format.format(val) if isinstance(val, (int, float)) and pd.notna(val) else str(val)
+                        except (ValueError, TypeError): # Handle cases where format might not apply
+                            return str(val)
+                    return not_available_str
+
+                move_value_str = get_formatted_value(latest_briefing_components_data, '^MOVE')
+                spread_10y2y_raw = latest_briefing_components_data['spread_10y2y'] if latest_briefing_components_data is not None and 'spread_10y2y' in latest_briefing_components_data else None
+                spread_10y2y_str = f"{(spread_10y2y_raw * 100):.2f} bps" if pd.notna(spread_10y2y_raw) else "N/A"
+                primary_dealer_pos_str = get_formatted_value(latest_briefing_components_data, 'NYFED/PRIMARY_DEALER_NET_POSITION', value_format="{:,.0f}") # Changed fmt to value_format
+                vix_value_str = get_formatted_value(latest_briefing_components_data, 'FRED/VIXCLS')
+                sofr_dev_str = get_formatted_value(latest_briefing_components_data, 'FRED/SOFR_Dev') # Assuming SOFR_Dev is already a deviation value
+
+                market_briefing_output = {
+                    "briefing_date": briefing_date_str,
+                    "data_window_end_date": briefing_date_str, # Or actual end_date_to_use if different
+                    "dealer_stress_index": {"current_value_description": stress_level_desc, "trend_approximation": stress_trend_desc},
+                    "key_financial_components_latest": [
+                        {"component_name": "MOVE Index (Bond Mkt Volatility)", "value_string": move_value_str},
+                        {"component_name": "10Y-2Y Treasury Spread", "value_string": spread_10y2y_str},
+                        {"component_name": "Primary Dealer Net Positions (Millions USD)", "value_string": primary_dealer_pos_str}
+                    ],
+                    "broader_market_context_latest": {
+                        "vix_index (Equity Mkt Volatility)": vix_value_str,
+                        "sofr_deviation_from_ma": sofr_dev_str
+                    },
+                    "summary_narrative": (
+                        f"市場壓力指數 ({briefing_date_str}): {stress_level_desc}. "
+                        f"主要影響因素包括債券市場波動率 (MOVE Index: {move_value_str}) 及 "
+                        f"10年期與2年期公債利差 ({spread_10y2y_str}). "
+                        f"一級交易商淨持倉部位為 {primary_dealer_pos_str} 百萬美元。"
                     )
-                    global_log(f"RemoteAIAgent initialized for historical loop.", "INFO", logger_name="MainApp.HistoricalLoop")
-
-                # Determine a start date for AI decisions to avoid processing very old data if stress index has a long history
-                # For example, start from the 'start_date_cfg' or a specific fixed date like '2020-01-01'
-                # This ensures we only make AI calls for the relevant period defined in the task.
-                ai_decision_start_date = pd.to_datetime(start_date_cfg) # Use the overall fetch start date from config
-
-                for decision_date, row_data in stress_index_df.iterrows():
-                    # Ensure decision_date is timezone-naive if it's a Timestamp for comparison
-                    current_decision_date_naive = pd.to_datetime(decision_date).tz_localize(None) if isinstance(decision_date, pd.Timestamp) and decision_date.tzinfo is not None else pd.to_datetime(decision_date)
-
-                    if current_decision_date_naive < ai_decision_start_date:
-                        global_log(f"Skipping AI decision for date {decision_date.strftime('%Y-%m-%d')} as it's before the configured AI decision start date {ai_decision_start_date.strftime('%Y-%m-%d')}.", "DEBUG", logger_name="MainApp.HistoricalLoop")
-                        continue
-
-                    briefing_date_str = decision_date.strftime('%Y-%m-%d')
-                    current_stress_value = row_data['DealerStressIndex']
-
-                    stress_level_desc = "N/A"
-                    if pd.notna(current_stress_value):
-                        threshold_moderate = engine_params_from_config.get('stress_threshold_moderate', 40)
-                        threshold_high = engine_params_from_config.get('stress_threshold_high', 60)
-                        threshold_extreme = engine_params_from_config.get('stress_threshold_extreme', 80)
-                        if current_stress_value >= threshold_extreme: stress_level_desc = f"{current_stress_value:.2f} (極度緊張)"
-                        elif current_stress_value >= threshold_high: stress_level_desc = f"{current_stress_value:.2f} (高度緊張)"
-                        elif current_stress_value >= threshold_moderate: stress_level_desc = f"{current_stress_value:.2f} (中度緊張)"
-                        else: stress_level_desc = f"{current_stress_value:.2f} (正常)"
-
-                    stress_trend_desc = "N/A"
-                    # For trend, we need to look at the previous day's stress index.
-                    # stress_index_df is sorted by date. .diff() can be used.
-                    stress_diff_series = stress_index_df['DealerStressIndex'].diff()
-                    if decision_date in stress_diff_series.index:
-                        change_in_stress = stress_diff_series.loc[decision_date]
-                        if pd.notna(change_in_stress):
-                            stress_trend_desc = "上升" if change_in_stress > 0.1 else ("下降" if change_in_stress < -0.1 else "穩定")
-
-                    engine_prepared_full_df = indicator_engine_instance.df_prepared # This df contains all components
-                    current_components_data = None
-                    if engine_prepared_full_df is not None and not engine_prepared_full_df.empty:
-                        if decision_date in engine_prepared_full_df.index:
-                            current_components_data = engine_prepared_full_df.loc[decision_date]
-                        # else: # If exact match fails, could try to find nearest, but for daily, it should match.
-                            # global_log(f"Data for {briefing_date_str} not found in engine_prepared_full_df for briefing components.", "WARNING", logger_name="MainApp.HistoricalLoop")
-
-                    def get_formatted_value(series_data, component_key, value_format="{:.2f}", not_available_str="N/A"):
-                        if series_data is not None and component_key in series_data.index and pd.notna(series_data[component_key]):
-                            val = series_data[component_key]
-                            try: return value_format.format(val) if isinstance(val, (int, float)) and pd.notna(val) else str(val)
-                            except (ValueError, TypeError): return str(val)
-                        return not_available_str
-
-                    move_value_str = get_formatted_value(current_components_data, '^MOVE')
-                    spread_10y2y_raw = current_components_data['spread_10y2y'] if current_components_data is not None and 'spread_10y2y' in current_components_data else None
-                    spread_10y2y_str = f"{(spread_10y2y_raw * 100):.2f} bps" if pd.notna(spread_10y2y_raw) else "N/A"
-                    primary_dealer_pos_str = get_formatted_value(current_components_data, 'NYFED/PRIMARY_DEALER_NET_POSITION', value_format="{:,.0f}")
-                    vix_value_str = get_formatted_value(current_components_data, 'FRED/VIXCLS')
-                    sofr_dev_str = get_formatted_value(current_components_data, 'FRED/SOFR_Dev')
-
-                    # Generate market briefing for this specific date (optional, can be skipped if only AI decision is needed)
-                    # For now, we'll generate it to pass to AI
-                    market_briefing_for_ai = {
-                        "briefing_date": briefing_date_str,
-                        "dealer_stress_index_value": current_stress_value if pd.notna(current_stress_value) else None,
-                        "dealer_stress_index_level": stress_level_desc.split('(')[-1].replace(')', '').strip() if stress_level_desc != "N/A" else None,
-                        "dealer_stress_index_trend": stress_trend_desc,
-                        "key_indicators": {
-                            "MOVE_Index": move_value_str, "10Y_2Y_Treasury_Spread": spread_10y2y_str,
-                            "Primary_Dealer_Net_Positions_USD_Millions": primary_dealer_pos_str,
-                            "VIX_Index": vix_value_str, "SOFR_Deviation": sofr_dev_str
-                        }
-                    }
-                    # Log the last day's market briefing to console as before for compatibility with run_prototype.sh output expectation
-                    if decision_date == stress_index_df.index[-1]:
-                        global_log("\n--- 最新市場簡報 (Market Briefing - JSON) ---", "INFO", logger_name="MainApp.Briefing")
-                        print("\n--- 最新市場簡報 (Market Briefing - JSON) ---")
-                        # Construct the full briefing for the last day
-                        full_latest_briefing = {
-                            "briefing_date": briefing_date_str, "data_window_end_date": briefing_date_str,
-                            "dealer_stress_index": {"current_value_description": stress_level_desc, "trend_approximation": stress_trend_desc},
-                            "key_financial_components_latest": [
-                                {"component_name": "MOVE Index (Bond Mkt Volatility)", "value_string": move_value_str},
-                                {"component_name": "10Y-2Y Treasury Spread", "value_string": spread_10y2y_str},
-                                {"component_name": "Primary Dealer Net Positions (Millions USD)", "value_string": primary_dealer_pos_str}
-                            ],
-                            "broader_market_context_latest": {"vix_index (Equity Mkt Volatility)": vix_value_str, "sofr_deviation_from_ma": sofr_dev_str},
-                            "summary_narrative": (
-                                f"市場壓力指數 ({briefing_date_str}): {stress_level_desc}. "
-                                f"主要影響因素包括債券市場波動率 (MOVE Index: {move_value_str}) 及 "
-                                f"10年期與2年期公債利差 ({spread_10y2y_str}). "
-                                f"一級交易商淨持倉部位為 {primary_dealer_pos_str} 百萬美元。"
-                            )
-                        }
-                        print(json.dumps(full_latest_briefing, indent=2, ensure_ascii=False))
-                        global_log(json.dumps(full_latest_briefing, indent=2, ensure_ascii=False), "INFO", logger_name="MainApp.BriefingOutput")
-
-
-                    if ai_agent: # If AI agent is configured and initialized
-                        global_log(f"Requesting AI decision for date: {briefing_date_str}", "DEBUG", logger_name="MainApp.HistoricalLoop")
-                        ai_decision_model_instance, raw_ai_response = ai_agent.get_decision(market_data=market_briefing_for_ai)
-                        ai_api_call_count += 1
-
-                        if ai_decision_model_instance:
-                            decision_log_data = {
-                                "decision_date": decision_date.date(), # Ensure it's a date object
-                                "stress_index_value": current_stress_value if pd.notna(current_stress_value) else None,
-                                "strategy_summary": ai_decision_model_instance.strategy_summary,
-                                "key_factors": json.dumps(ai_decision_model_instance.key_factors, ensure_ascii=False),
-                                "confidence_score": ai_decision_model_instance.confidence_score,
-                                "raw_ai_response": raw_ai_response,
-                                "decision_timestamp": datetime.now(timezone.utc)
-                            }
-                            ai_decision_log_df = pd.DataFrame([decision_log_data])
-                            success_ai_log = db_manager.bulk_insert_or_replace('log_ai_decision', ai_decision_log_df, unique_cols=['decision_date'])
-                            if success_ai_log:
-                                global_log(f"AI decision for {briefing_date_str} logged. API Calls: {ai_api_call_count}", "INFO", logger_name="MainApp.HistoricalLoop")
-                            else:
-                                global_log(f"Failed to log AI decision for {briefing_date_str}.", "ERROR", logger_name="MainApp.HistoricalLoop")
-                        else:
-                            global_log(f"Failed to get valid AI decision for {briefing_date_str}. Raw AI response: {raw_ai_response}", "ERROR", logger_name="MainApp.HistoricalLoop")
-                    else:
-                        # This case is hit if AI is not configured. Log once or periodically.
-                        if ai_api_call_count == 0: # Log this only once if AI is not configured
-                             global_log("AI agent not configured, skipping AI decision logging for all historical dates.", "INFO", logger_name="MainApp.HistoricalLoop")
-                        ai_api_call_count +=1 # Increment to prevent re-logging the message
-
-                global_log(f"Finished historical AI decision loop. Total AI API calls attempted: {ai_api_call_count}", "INFO", logger_name="MainApp.HistoricalLoop")
-
+                }
+                global_log("\n--- 市場簡報 (Market Briefing - JSON) ---", "INFO", logger_name="MainApp.Briefing")
+                # Print to console for run_prototype.sh to capture
+                print("\n--- 市場簡報 (Market Briefing - JSON) ---")
+                print(json.dumps(market_briefing_output, indent=2, ensure_ascii=False))
+                # Also log it to the file
+                global_log(json.dumps(market_briefing_output, indent=2, ensure_ascii=False), "INFO", logger_name="MainApp.BriefingOutput")
 
     except FileNotFoundError as e_fnf: # Specifically for config loading
         err_msg_fnf = f"CRITICAL FAILURE: Configuration file not found: {e_fnf}. Application cannot start."

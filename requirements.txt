@@ -6,15 +6,7 @@ fredapi
 yfinance
 requests
 openpyxl
+beautifulsoup4
 # FinMind # Removed as it's not currently used
 tqdm
 # Add any other specific versions if necessary, e.g., pandas==2.0.3
-
-# Added for Phase 3 (AI Agent & Analytics Reporter)
-pydantic
-plotly
-wordcloud
-# requests is already listed
-# pyyaml is already listed
-# pandas is already listed
-# duckdb is already listed

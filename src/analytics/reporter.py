@@ -11,6 +11,7 @@ import argparse
 import json
 from collections import Counter
 from datetime import datetime
+from typing import Optional, List
 
 # Configure logger for this module
 logger = logging.getLogger(__name__)
@@ -30,12 +31,16 @@ class InsightReporter:
         if db_path_override:
             self.db_path = db_path_override
         else:
-            # Determine project root from config_path's parent directory (assuming config is in src/configs)
-            project_root = config_path.parent.parent
+            # The database path in config is relative to the project root.
+            # The script is expected to be run from the project root.
             db_relative_path = self.config.get('database', {}).get('path', 'data/financial_data.duckdb')
-            self.db_path = project_root / db_relative_path
+            # Ensure this path is resolved relative to the project root, not just CWD of reporter.py if it's different.
+            # Assuming reporter.py is run from project root, Path(db_relative_path) is fine.
+            # For robustness, one might pass project_root to InsightReporter.
+            # For now, we rely on CWD = project_root.
+            self.db_path = Path(db_relative_path).resolve() # Resolve to get absolute path immediately
 
-        logger.info(f"InsightReporter initialized. Using database: {self.db_path.resolve()}")
+        logger.info(f"InsightReporter initialized. Using ABSOLUTE database path: {self.db_path}") # Log absolute path
         self.conn = None
 
     def _load_config(self, config_path: Path) -> dict:
@@ -47,21 +52,23 @@ class InsightReporter:
             raise
 
     def _connect_db(self):
-        if self.conn is None or self.conn.isclosed(): # Check if conn is None or already closed
+        if self.conn is None: # If no connection object exists, create one
             try:
                 logger.info(f"Connecting to database: {self.db_path}")
                 self.conn = duckdb.connect(database=str(self.db_path), read_only=True)
             except Exception as e:
                 logger.error(f"Failed to connect to database {self.db_path}: {e}")
                 raise
+        # If self.conn exists, we assume it's open. DuckDB will error on operations if closed.
         else:
-            logger.info("Database connection already active.")
+            logger.info("Database connection object exists.")
 
 
     def _close_db(self):
         if self.conn:
             self.conn.close()
-            logger.info("Database connection closed.")
+            self.conn = None # Set to None after closing
+            logger.info("Database connection closed and object set to None.")
 
     def _fetch_data(self, query: str) -> pd.DataFrame:
         self._connect_db()
@@ -190,6 +197,23 @@ class InsightReporter:
         """Generates an HTML report with various insight plots."""
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        # --- Debug: Query log_ai_decision table ---
+        self._connect_db() # Ensure connection
+        if self.conn:
+            try:
+                debug_query = "SELECT COUNT(*) as count, SUM(CASE WHEN stress_index_value IS NOT NULL THEN 1 ELSE 0 END) as non_null_stress, SUM(CASE WHEN strategy_summary != 'AI_CALL_SKIPPED_OR_FAILED' THEN 1 ELSE 0 END) as valid_strategies FROM log_ai_decision;"
+                debug_df = self.conn.execute(debug_query).fetchdf()
+                logger.info(f"DEBUG log_ai_decision stats: {debug_df.to_dict('records')}")
+
+                debug_sample_query = "SELECT decision_date, stress_index_value, strategy_summary FROM log_ai_decision LIMIT 5;"
+                debug_sample_df = self.conn.execute(debug_sample_query).fetchdf()
+                logger.info(f"DEBUG log_ai_decision sample:\n{debug_sample_df}")
+
+            except Exception as e_debug:
+                logger.error(f"DEBUG query failed: {e_debug}")
+            # self._close_db() # Don't close yet, other functions need it. Will be closed at end of generate_report
+        # --- End Debug ---
+
         stress_data = self.get_stress_index_data()
         ai_decisions = self.get_ai_decisions()
 
@@ -276,4 +300,3 @@ def main():
 if __name__ == "__main__":
     # Example: python src/analytics/reporter.py --output-dir reports_output
     main()
-```

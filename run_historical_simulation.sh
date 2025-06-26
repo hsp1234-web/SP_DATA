@@ -10,23 +10,98 @@ echo "--- 開始歷史回溯模擬 ---"
 # 例如，在 src/configs/project_config.yaml 中設定:
 # data_fetch_range:
 #   start_date: "2020-01-01"
-#   end_date: "2023-12-31"
+#   end_date: "2023-12-31" # 確保結束日期已更新以進行完整回溯
 
-# 檢查必要的環境變數 (例如 AI 服務的 API 金鑰) 是否已設定
-# 這裡假設使用者已在環境中設定了 project_config.yaml 中 ai_service.api_key_env 指定的變數
-AI_KEY_ENV_NAME=$(grep -oP 'api_key_env:\s*"?\K[^"\s]+' src/configs/project_config.yaml | head -n 1)
+# 創建 src/configs/project_config.yaml (與 run_prototype.sh 中的定義保持一致)
+# 這確保了 AI API 金鑰是從檔案讀取的，而不是環境變數。
+mkdir -p src/configs # 確保目錄存在
+cat <<EOF > src/configs/project_config.yaml
+# Configuration for the Financial Data Processing Prototype
 
-if [ -z "$AI_KEY_ENV_NAME" ]; then
-  echo "警告：無法從 src/configs/project_config.yaml 中讀取 AI API 金鑰的環境變數名稱 (ai_service.api_key_env)。"
-  # 你可能還是想繼續，如果 AI 服務不是嚴格必須的，或者 main.py 會處理這個情況
-elif [ -z "${!AI_KEY_ENV_NAME}" ]; then
-  echo "錯誤：AI API 金鑰環境變數 '$AI_KEY_ENV_NAME' 未設定。"
-  echo "請先設定此環境變數，然後再執行腳本。"
-  echo "例如：export $AI_KEY_ENV_NAME=\"your_api_key_here\""
-  exit 1
-else
-  echo "AI API 金鑰環境變數 '$AI_KEY_ENV_NAME' 已偵測到。"
-fi
+database:
+  path: "data/financial_data.duckdb"
+
+data_fetch_range:
+  start_date: "2020-01-01" # 根據需要調整進行完整回溯
+  end_date: "2025-06-26" # 根據需要調整，此處為先前範例的結束日期
+
+api_endpoints:
+  fred:
+    api_key_env: "FRED_API_KEY" # main.py 中目前是硬編碼，但保留此結構
+    base_url: "https://api.stlouisfed.org/fred/"
+
+target_metrics:
+  fred_series_ids:
+    - "DGS10"
+    - "DGS2"
+    - "SOFR"
+    - "VIXCLS"
+    - "WRESBAL"
+  yfinance_tickers:
+    - "^MOVE"
+
+nyfed_primary_dealer_urls:
+  - url: "https://www.newyorkfed.org/medialibrary/media/markets/prideal/prideal2024.xlsx"
+    file_pattern: "prideal2024.xlsx"
+    format_type: "PD_STATS_FORMAT_2013_ONWARDS"
+  - url: "https://www.newyorkfed.org/medialibrary/media/markets/prideal/prideal2023.xlsx"
+    file_pattern: "prideal2023.xlsx"
+    format_type: "PD_STATS_FORMAT_2013_ONWARDS"
+  - url: "https://www.newyorkfed.org/medialibrary/media/markets/prideal/prideal2022.xlsx"
+    file_pattern: "prideal2022.xlsx"
+    format_type: "PD_STATS_FORMAT_2013_ONWARDS"
+
+nyfed_format_recipes:
+  "PD_STATS_FORMAT_2013_ONWARDS":
+    header_row: 3
+    date_column: "As of Date"
+    columns_to_sum:
+      - "U.S. Treasury coupons"
+      - "U.S. Treasury bills"
+      - "U.S. Treasury floating rate notes (FRNs)"
+      - "Federal agency debt securities (MBS)"
+      - "Federal agency debt securities (non-MBS)"
+      - "Commercial paper"
+      - "Certificates of deposit"
+      - "Bankers acceptances"
+      - "Equities"
+      - "Corporate bonds (investment grade)"
+      - "Corporate bonds (below investment grade)"
+      - "Municipal securities"
+      - "Other assets"
+    data_unit_multiplier: 1000000
+
+indicator_engine_params:
+  rolling_window_days: 252
+  stress_index_weights:
+    sofr_deviation: 0.20
+    spread_10y2y: 0.20
+    primary_dealer_position: 0.15
+    move_index: 0.25
+    vix_index: 0.15
+    pos_res_ratio: 0.05
+  stress_threshold_moderate: 40
+  stress_threshold_high: 60
+  stress_threshold_extreme: 80
+
+requests_config:
+  max_retries: 3
+  base_backoff_seconds: 1
+  timeout: 30
+  download_timeout: 120
+
+ai_service:
+  api_key: "YOUR_API_KEY_HERE" # AI Agent 將從此處讀取
+  api_endpoint: "https://api.anthropic.com/v1/messages"
+  default_model: "claude-3-opus-20240229"
+  max_retries: 3
+  retry_delay_seconds: 5
+  api_call_delay_seconds: 1.0
+EOF
+
+echo "src/configs/project_config.yaml for historical simulation has been created/updated."
+echo "AI API Key should be configured in src/configs/project_config.yaml (ai_service.api_key)."
+echo "If it remains 'YOUR_API_KEY_HERE', AI decisions will be skipped by the agent."
 
 # 執行主應用程式
 echo "執行 src/main.py 進行歷史數據處理與 AI 決策生成..."

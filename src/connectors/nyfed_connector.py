@@ -2,11 +2,17 @@ import requests
 import pandas as pd
 from typing import Dict, Any, Tuple, Optional, List
 from io import BytesIO
+import requests
+import pandas as pd
+from typing import Dict, Any, Tuple, Optional, List
+from io import BytesIO
 import logging
 from datetime import datetime, timezone
 import sys
 import time
 import random
+from bs4 import BeautifulSoup # Added for HTML parsing
+from urllib.parse import urljoin # Added for joining relative URLs
 
 try:
     from .base import BaseConnector
@@ -41,10 +47,14 @@ class NYFedConnector(BaseConnector):
         if not self.recipes:
             self.logger.warning("No recipes for NYFed formats (nyfed_format_recipes).")
 
-    def _download_excel_with_retries(self, url:str) -> Optional[BytesIO]:
+    def _download_excel_with_retries(self, url_config: Dict[str, str]) -> Optional[BytesIO]: # Changed signature
+        url = url_config.get('url') # Get URL from url_config
+        if not url:
+            self.logger.error("URL not found in url_config for _download_excel_with_retries.")
+            return None
+
         retries = self.requests_config.get('max_retries', 3)
         base_backoff = self.requests_config.get('base_backoff_seconds', 1)
-        # Use specific download_timeout from requests_config if available, else general timeout
         timeout_sec = self.requests_config.get('download_timeout', self.requests_config.get('timeout', 60))
 
         headers = {
@@ -52,22 +62,90 @@ class NYFedConnector(BaseConnector):
         }
         for attempt in range(retries):
             try:
-                self.logger.debug(f"Attempt {attempt + 1}/{retries} to download NYFed Excel from {url}")
-                response = requests.get(url, timeout=timeout_sec, headers=headers)
-                response.raise_for_status()
-                content_type = response.headers.get('Content-Type', '')
-                self.logger.info(f"Successfully downloaded from NYFed URL {url} (status {response.status_code}). Content-Type: {content_type}. Size: {len(response.content)} bytes.")
-                # Log the first 100 bytes to check file signature
-                self.logger.debug(f"NYFed downloaded content head (first 100 bytes): {response.content[:100]}")
+                self.logger.debug(f"Attempt {attempt + 1}/{retries} to access NYFed resource page: {url}")
+                page_response = requests.get(url, timeout=timeout_sec, headers=headers)
+                self.logger.info(f"NYFed Page URL: {url}, Attempt: {attempt + 1}, Status: {page_response.status_code}, Content-Type: {page_response.headers.get('Content-Type')}")
+                page_response.raise_for_status()
 
-                # Basic check for Excel content type
-                if not any(ct in content_type.lower() for ct in ['excel', 'spreadsheetml', 'officedocument']):
-                    self.logger.error(f"Downloaded content from {url} does not appear to be an Excel file based on Content-Type: '{content_type}'. Skipping.")
-                    return None # Treat as failure if content type is wrong
+                # If the page itself is HTML, try to find an Excel link
+                if 'text/html' in page_response.headers.get('Content-Type', '').lower():
+                    self.logger.info(f"Content from {url} is HTML. Attempting to find Excel link...")
+                    soup = BeautifulSoup(page_response.content, 'html.parser')
+                    file_pattern_hint = url_config.get('file_pattern', '') # Now uses passed url_config
+                    year_hint = ''.join(filter(str.isdigit, file_pattern_hint))
 
-                return BytesIO(response.content)
+                    excel_link_found = None
+                    # Try a few patterns for finding the link
+                    possible_links = soup.find_all('a', href=True)
+                    self.logger.debug(f"Found {len(possible_links)} links on page {url}. Checking for Excel files related to '{file_pattern_hint}'.")
+
+                    for link_tag in possible_links:
+                        href = link_tag['href']
+                        link_text = link_tag.get_text(strip=True)
+                        # Prioritize links containing the file_pattern directly or parts of it
+                        if file_pattern_hint and file_pattern_hint.lower() in href.lower():
+                             excel_link_found = href
+                             self.logger.info(f"Found strong match for Excel link by file_pattern in href: {excel_link_found} for {url}")
+                             break
+                        if year_hint and year_hint in href.lower() and '.xlsx' in href.lower():
+                             excel_link_found = href
+                             self.logger.info(f"Found year match for Excel link in href: {excel_link_found} for {url}")
+                             break
+                        if 'prideal' in href.lower() and '.xlsx' in href.lower(): # General fallback
+                             excel_link_found = href
+                             self.logger.info(f"Found general 'prideal' Excel link in href: {excel_link_found} for {url}")
+                             break
+                        if link_text and file_pattern_hint and file_pattern_hint.lower() in link_text.lower() and '.xlsx' in href.lower():
+                            excel_link_found = href
+                            self.logger.info(f"Found Excel link by text match '{link_text}': {excel_link_found} for {url}")
+                            break
+
+                    if excel_link_found:
+                        # Ensure the link is absolute
+                        if not excel_link_found.startswith('http'):
+                            from urllib.parse import urljoin
+                            excel_download_url = urljoin(url, excel_link_found) # url is the base page URL
+                        else:
+                            excel_download_url = excel_link_found
+
+                        self.logger.info(f"Attempting to download actual Excel file from scraped URL: {excel_download_url}")
+                        response = requests.get(excel_download_url, timeout=timeout_sec, headers=headers)
+                        self.logger.info(f"Scraped Excel URL: {excel_download_url}, Status: {response.status_code}, Content-Type: {response.headers.get('Content-Type')}, Size: {len(response.content)} bytes")
+                        response.raise_for_status()
+                        # Now check content type of the actual downloaded file
+                        content_type = response.headers.get('Content-Type', '').lower()
+                        if any(ct in content_type for ct in ['excel', 'spreadsheetml', 'officedocument', 'application/octet-stream']):
+                            self.logger.info(f"Successfully downloaded and verified Excel from scraped link: {excel_download_url}")
+                            return BytesIO(response.content)
+                        else:
+                            self.logger.error(f"Scraped link {excel_download_url} provided non-Excel Content-Type: '{content_type}'. Skipping.")
+                            return None
+                    else:
+                        self.logger.error(f"Could not find a suitable Excel download link on HTML page: {url} for pattern '{file_pattern_hint}'.")
+                        self.logger.debug(f"Page content sample (first 1000 bytes of HTML from {url}): {page_response.content[:1000].decode('utf-8', errors='replace')}")
+                        return None # No link found
+
+                # If original URL was not HTML, or if it was HTML but logic above failed to return:
+                # This part handles direct downloads if the URL itself is supposed to be an Excel file
+                # (original logic before scraping attempt)
+                # For safety, let's assume if it wasn't HTML and wasn't handled, it might be a direct file.
+                # This might be redundant if the HTML path is robust.
+                # However, the previous logic had a direct check for excel content type.
+                # Let's ensure if it's not HTML, we still check its content type directly.
+                elif any(ct in page_response.headers.get('Content-Type', '').lower() for ct in ['excel', 'spreadsheetml', 'officedocument', 'application/octet-stream']):
+                    self.logger.info(f"URL {url} seems to be a direct Excel link (Content-Type: {page_response.headers.get('Content-Type', '')}). Using its content.")
+                    return BytesIO(page_response.content)
+                else: # Neither HTML with a good link, nor a direct Excel link by Content-Type
+                    self.logger.error(f"Content from {url} is not HTML with a usable Excel link, nor a direct Excel file. Content-Type: {page_response.headers.get('Content-Type', '')}. Skipping.")
+                    self.logger.debug(f"Content sample (first 500 bytes from {url}): {page_response.content[:500].decode('utf-8', errors='replace') if page_response.content else 'No content'}")
+                    return None
+
             except requests.exceptions.HTTPError as e:
-                self.logger.warning(f"HTTP error on attempt {attempt + 1}/{retries} for NYFed URL '{url}': {e.response.status_code if e.response else 'N/A'} - {e.response.text[:100] if e.response else 'N/A'}")
+                # This error is for the page_response or the subsequent excel_response
+                response_for_error_log = e.response # Could be page_response or the actual excel download response
+                self.logger.warning(f"HTTP error on attempt {attempt + 1}/{retries} for NYFed process (URL: {url}): {response_for_error_log.status_code if response_for_error_log else 'N/A'} - {response_for_error_log.text[:200] if response_for_error_log and response_for_error_log.text else 'N/A'}")
+                if response_for_error_log is not None:
+                    self.logger.warning(f"Headers for error response (URL: {url}): {response_for_error_log.headers}")
                 if e.response is not None and 400 <= e.response.status_code < 500 and e.response.status_code != 429:
                     self.logger.error(f"Client error {e.response.status_code} for NYFed URL '{url}', not retrying this file.")
                     return None
@@ -104,7 +182,7 @@ class NYFedConnector(BaseConnector):
                 continue
 
             self.logger.info(f"Processing NYFed file: {file_log_name} from URL: {url} (format: {format_type})")
-            excel_file_content = self._download_excel_with_retries(url)
+            excel_file_content = self._download_excel_with_retries(file_info) # Pass the whole file_info dict
             if not excel_file_content:
                 continue
 
