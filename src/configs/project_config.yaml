@@ -82,3 +82,26 @@ requests_config:
   base_backoff_seconds: 1
   timeout: 30 # Default timeout for most API calls
   download_timeout: 120 # Longer timeout for file downloads (like NYFed Excel)
+
+# Configuration for AI Service (RemoteAIAgent)
+ai_service:
+  # Environment variable that holds the API key for the AI service
+  # Example: export MY_LLM_API_KEY="your_actual_api_key_here"
+  api_key_env: "ANTHROPIC_API_KEY" # Placeholder, replace with your actual env var name
+
+  # API endpoint for the AI service
+  # Example for Anthropic Claude API:
+  api_endpoint: "https://api.anthropic.com/v1/messages"
+  # Example for OpenAI API:
+  # api_endpoint: "https://api.openai.com/v1/chat/completions"
+
+  # Default model to use if not overridden in the call
+  # Example for Anthropic Claude:
+  default_model: "claude-3-opus-20240229"
+  # Example for OpenAI GPT-4 Turbo:
+  # default_model: "gpt-4-turbo-preview"
+
+  # API call settings
+  max_retries: 3
+  retry_delay_seconds: 5 # Delay between retries for API calls
+  api_call_delay_seconds: 1.0 # Minimum delay between consecutive API calls (respect rate limits)
