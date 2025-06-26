@@ -1,59 +1,46 @@
 # src/connectors/__init__.py
-import logging # Added import for logger
+import logging
 
-# 使 Connector 更容易被導入
-# 例如: from src.connectors import FinMindConnector
+# --- 戰術模組停用 (第二次嘗試 - 確保NYFed隔離) ---
+# 僅保留 NYFedConnector 的導入。
+# diagnose_nyfed_logic.py 中直接 `from connectors.nyfed_connector import NYFedConnector`
+# 因此，嚴格來說，這個 __init__.py 在該診斷腳本執行時，如果只導入NYFedConnector，
+# 其內容對 diagnose_nyfed_logic.py 的影響不大。
+# 但是，為了防止其他可能的間接導入或測試框架掃描路徑時引發問題，
+# 我們還是將其清理乾淨，只明確導出 NYFedConnector。
 
-# 根據已建立的 Connector 檔案，取消註解並加入
-from .alpha_vantage_connector import AlphaVantageConnector
-# from .base_connector import BaseConnector # 舊的 BaseConnector 結構已移除或不直接使用
-from .finlab_connector import FinLabConnector # 目前是佔位符
-from .finmind_connector import FinMindConnector
-from .finnhub_connector import FinnhubConnector
-from .fmp_connector import FMPConnector
-from .fred_connector import FredConnector
-from .nyfed_connector import NYFedConnector
-from .polygon_io_connector import PolygonIOConnector
-from .yfinance_connector import YFinanceConnector
+# from .alpha_vantage_connector import AlphaVantageConnector
+# from .finlab_connector import FinLabConnector
+# from .finmind_connector import FinMindConnector
+# from .finnhub_connector import FinnhubConnector
+# from .fmp_connector import FMPConnector
+# from .fred_connector import FredConnector
+from .nyfed_connector import NYFedConnector # <<< 唯一實際導入的 Connector
+# from .polygon_io_connector import PolygonIOConnector
+# from .yfinance_connector import YFinanceConnector
 
-# 可以定義一個 __all__ 列表來控制 `from src.connectors import *` 的行為
 __all__ = [
-    "AlphaVantageConnector",
-    "FinLabConnector", # 即使是佔位符，也先加入
-    "FinMindConnector",
-    "FinnhubConnector",
-    "FMPConnector",
-    "FredConnector",
     "NYFedConnector",
-    "PolygonIOConnector",
-    "YFinanceConnector",
 ]
 
-# 可以在這裡添加一些通用的 Connector 輔助函數或常數 (如果需要)
-# 例如，一個函數用來根據名稱動態載入 Connector:
+# 在此診斷模式下，DataMaster 用到的輔助函數和映射表可以被簡化或移除，
+# 因為我們的主要目標是 diagnose_nyfed_logic.py 的直接執行，它不依賴 DataMaster。
+# 如果其他測試(非本次診斷目標)意外運行並嘗試初始化 DataMaster，
+# 以下簡化的部分會讓 DataMaster 只能找到 NYFed。
+
 SUPPORTED_CONNECTORS_MAP = {
-    "alphavantage": AlphaVantageConnector,
-    "finlab": FinLabConnector,
-    "finmind": FinMindConnector,
-    "finnhub": FinnhubConnector,
-    "fmp": FMPConnector,
-    "fred": FredConnector,
     "nyfed": NYFedConnector,
-    "polygon_io": PolygonIOConnector, # 注意 python 模組名是 polygon_io_connector
-    "yfinance": YFinanceConnector,
 }
 
 def get_connector_class(connector_name: str):
-    """
-    根據 connector_name (小寫，例如 'finmind') 返回對應的 Connector 類別。
-    """
-    connector_name_lower = connector_name.lower().replace('-', '_') # 處理 polygon-io 這種情況
+    logger = logging.getLogger(__name__) # 在函數內部獲取 logger 實例
+    connector_name_lower = connector_name.lower().replace('-', '_')
     if connector_name_lower in SUPPORTED_CONNECTORS_MAP:
         return SUPPORTED_CONNECTORS_MAP[connector_name_lower]
     else:
-        logger.error(f"Unsupported connector name: {connector_name}. Available: {list(SUPPORTED_CONNECTORS_MAP.keys())}")
-        raise ValueError(f"Unsupported connector: {connector_name}")
+        logger.error(f"Unsupported connector name during NYFed-focused diagnosis: {connector_name}. Only NYFed is effectively available via get_connector_class.")
+        raise ValueError(f"Unsupported connector: {connector_name}. Only NYFed is configured in __init__.py for diagnosis.")
 
-logger = logging.getLogger(__name__) # Initialize logger for this module
-logger.info(f"Connectors package initialized. Available (imported for __all__): {', '.join(__all__)}")
-logger.info(f"Supported connectors map contains: {list(SUPPORTED_CONNECTORS_MAP.keys())}")
+logger = logging.getLogger(__name__)
+logger.info(f"Connectors package initialized (NYFed Diagnosis Mode - Strict Isolation). Effective __all__: {__all__}")
+logger.info(f"Supported connectors map (NYFed Diagnosis Mode - Strict Isolation) contains: {list(SUPPORTED_CONNECTORS_MAP.keys())}")
