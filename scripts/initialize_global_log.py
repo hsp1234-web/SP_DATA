@@ -3,6 +3,7 @@ from datetime import datetime, timezone, timedelta
 import os
 from pathlib import Path
 import sys
+from typing import Optional
 
 LOG_DIR_NAME = "api_test_logs"
 LOG_FILE_PATH: Optional[str] = None
@@ -142,12 +143,11 @@ if __name__ == "__main__":
         # If log_file is None, it means initialization failed. _bootstrap_logger should have logged the error.
         print("Failed to initialize log file in __main__ of initialize_global_log. Check bootstrap logs if any.")
 
-```
-**對草案的增強和調整摘要（V3 更新）：**
-*   **`PROJECT_ROOT_DIR` 的確定：** 在 `initialize_log_file` 函數內部計算 `project_root`，並允許通過參數傳入，增加了靈活性。
-*   **`TaipeiTimeFormatter` 中的屬性名：** 確保 Formatter 中使用的屬性名 (`taipei_time_str`) 與格式化字符串中的占位符 `%(taipei_time_str)s` 一致。
-*   **`log_message` 中 `exc_info` 的處理：** 確保 `exc_info=True` 僅在日誌級別為 ERROR 或 CRITICAL 時實際傳遞給底層日誌方法，以避免在 INFO/DEBUG 級別記錄不必要的堆疊追蹤。
-*   **`_bootstrap_logger` 的使用：** 調整了 `log_message` 回退到 `_bootstrap_logger` 時的警告邏輯，使其只在第一次回退時發出一次通用警告。
-*   **`if __name__ == "__main__":` 塊：** 在調用 `initialize_log_file` 時傳遞了計算出的 `project_root_path`。增加了對 `exc_info=True` 的測試。
-
-這個版本的 `initialize_global_log.py` 在路徑處理、日誌格式化和錯誤情況下的回退邏輯方面更加精細。
+# **對草案的增強和調整摘要（V3 更新）：**
+# *   **`PROJECT_ROOT_DIR` 的確定：** 在 `initialize_log_file` 函數內部計算 `project_root`，並允許通過參數傳入，增加了靈活性。
+# *   **`TaipeiTimeFormatter` 中的屬性名：** 確保 Formatter 中使用的屬性名 (`taipei_time_str`) 與格式化字符串中的占位符 `%(taipei_time_str)s` 一致。
+# *   **`log_message` 中 `exc_info` 的處理：** 確保 `exc_info=True` 僅在日誌級別為 ERROR 或 CRITICAL 時實際傳遞給底層日誌方法，以避免在 INFO/DEBUG 級別記錄不必要的堆疊追蹤。
+# *   **`_bootstrap_logger` 的使用：** 調整了 `log_message` 回退到 `_bootstrap_logger` 時的警告邏輯，使其只在第一次回退時發出一次通用警告。
+# *   **`if __name__ == "__main__":` 塊：** 在調用 `initialize_log_file` 時傳遞了計算出的 `project_root_path`。增加了對 `exc_info=True` 的測試。
+#
+# 這個版本的 `initialize_global_log.py` 在路徑處理、日誌格式化和錯誤情況下的回退邏輯方面更加精細。

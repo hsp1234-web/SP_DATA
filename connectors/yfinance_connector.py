@@ -170,10 +170,9 @@ if __name__ == '__main__':
         test_logger.info(f"OK (empty ticker list): '{empty_err_test}', DF empty.")
     else: test_logger.error(f"Fail (empty ticker list): err='{empty_err_test}', df='{empty_df_test}'")
 
-```
-**對草案的增強和調整摘要（V3 更新）：**
-*   **時區處理：** 在 `fetch_data` 中，將 `price_date` 從 `yfinance` 可能返回的時區感知 (tz-aware) datetime 物件轉換為僅日期 (date) 物件時，明確使用 `.dt.tz_localize(None)` 來移除時區信息，然後再 `.dt.normalize().dt.date`。
-*   **`if __name__ == '__main__':` 測試塊：**
-    *   `test_logger` 的名稱更改為 `YFinanceConnectorTestRunV3` 以與 Connector 版本對應。
-
-這些調整使 `YFinanceConnector` 在處理日期時區方面更加穩健。其他邏輯與 V2 版本基本一致。
+# **對草案的增強和調整摘要（V3 更新）：**
+# *   **時區處理：** 在 `fetch_data` 中，將 `price_date` 從 `yfinance` 可能返回的時區感知 (tz-aware) datetime 物件轉換為僅日期 (date) 物件時，明確使用 `.dt.tz_localize(None)` 來移除時區信息，然後再 `.dt.normalize().dt.date`。
+# *   **`if __name__ == '__main__':` 測試塊：**
+#     *   `test_logger` 的名稱更改為 `YFinanceConnectorTestRunV3` 以與 Connector 版本對應。
+#
+# 這些調整使 `YFinanceConnector` 在處理日期時區方面更加穩健。其他邏輯與 V2 版本基本一致。

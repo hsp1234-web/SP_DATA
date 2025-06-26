@@ -17,6 +17,9 @@ if not logging.getLogger().hasHandlers():
 pre_init_logger = logging.getLogger("MainPreInit")
 
 PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
+# Ensure the log file is created in the project root, next to main.py
+DETAILED_LOG_FILENAME = os.path.join(PROJECT_ROOT, "market_briefing_log.txt")
+
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
     pre_init_logger.info(f"Inserted PROJECT_ROOT ({PROJECT_ROOT}) into sys.path.")
@@ -32,12 +35,12 @@ global_log_file_path_imported = None
 get_taipei_time_func_imported = None
 
 try:
-    from src.connectors.base import BaseConnector
-    from src.connectors.fred_connector import FredConnector
-    from src.connectors.nyfed_connector import NYFedConnector
-    from src.connectors.yfinance_connector import YFinanceConnector
-    from src.database.database_manager import DatabaseManager
-    from src.engine.indicator_engine import IndicatorEngine
+    from connectors.base import BaseConnector
+    # from src.connectors.fred_connector import FredConnector # FredConnector definition not found
+    from connectors.nyfed_connector import NYFedConnector
+    from connectors.yfinance_connector import YFinanceConnector
+    # from src.database.database_manager import DatabaseManager # DatabaseManager definition not found
+    from engine.indicator_engine import IndicatorEngine
 
     # Import from the updated initialize_global_log V3
     from scripts.initialize_global_log import log_message, get_taipei_time, LOG_FILE_PATH, initialize_log_file
@@ -95,6 +98,22 @@ def load_config(path="configs/project_config.yaml") -> Dict[str,Any]:
         raise
 
 def main():
+    # --- Setup detailed file logger for this run ---
+    root_logger = logging.getLogger() # Get the root logger
+    file_handler = logging.FileHandler(DETAILED_LOG_FILENAME, mode='w', encoding='utf-8')
+    file_formatter = logging.Formatter('%(asctime)s - %(name)s [%(levelname)s] - %(module)s.%(funcName)s:%(lineno)d - %(message)s')
+    file_handler.setFormatter(file_formatter)
+    file_handler.setLevel(logging.DEBUG) # Capture all levels
+    root_logger.addHandler(file_handler)
+    # Also ensure console output still happens for project_logger namespace if it was set up by initialize_global_log
+    # If initialize_global_log already added a StreamHandler to 'project_logger', this might be redundant
+    # but better to ensure it if we are manipulating the root_logger directly.
+    if global_log: # Check if global_log was successfully initialized
+        global_log(f"Detailed logging for this run will be saved to: {DETAILED_LOG_FILENAME}", "INFO", logger_name="MainApp.Setup")
+    else: # Fallback if global_log is not available (e.g. import error)
+        pre_init_logger.info(f"Detailed logging for this run will be saved to: {DETAILED_LOG_FILENAME}")
+
+
     global_log("--- 開始執行端到端金融數據處理原型 (V2.5 with Market Briefing) ---", "INFO", logger_name="MainApp.main")
 
     config = load_config() # Path is relative to where main.py is (PROJECT_ROOT)
@@ -129,30 +148,34 @@ def main():
     engine_logger = logging.getLogger("project_logger.IndicatorEngine")
 
     # Pass full config to DatabaseManager, which will extract its specific part
-    db_manager = DatabaseManager(config, logger_instance=db_logger)
+    # db_manager = DatabaseManager(config, logger_instance=db_logger) # Definition not found
 
     try:
-        db_manager.connect()
+        # db_manager.connect() # Definition not found
         data_fetch_flags = {'fred': False, 'nyfed': False, 'yfinance_move': False}
 
         global_log("\n--- 階段 1: 數據獲取 ---", "INFO", logger_name="MainApp.main")
 
-        fred_conn = FredConnector(config, logger_instance=fred_logger)
-        fred_ids = config.get('target_metrics', {}).get('fred_series_ids', [])
-        fred_df, fred_err = fred_conn.fetch_data(series_ids=fred_ids, start_date=start_date_cfg, end_date=end_date)
-        if fred_err: global_log(f"FRED Error: {fred_err}", "ERROR", logger_name="MainApp.main"); data_fetch_flags['fred'] = False
-        elif fred_df is not None:
-            global_log(f"Fetched {len(fred_df)} FRED records.", "INFO", logger_name="MainApp.main")
-            if not fred_df.empty: db_manager.bulk_insert_or_replace('fact_macro_economic_data', fred_df)
-            data_fetch_flags['fred'] = True
-        else: global_log("FRED Connector returned None, no error.", "WARNING", logger_name="MainApp.main"); data_fetch_flags['fred'] = False
+        # fred_conn = FredConnector(config, logger_instance=fred_logger) # Definition not found
+        # fred_ids = config.get('target_metrics', {}).get('fred_series_ids', [])
+        # fred_df, fred_err = fred_conn.fetch_data(series_ids=fred_ids, start_date=start_date_cfg, end_date=end_date)
+        # if fred_err: global_log(f"FRED Error: {fred_err}", "ERROR", logger_name="MainApp.main"); data_fetch_flags['fred'] = False
+        # elif fred_df is not None:
+        #     global_log(f"Fetched {len(fred_df)} FRED records.", "INFO", logger_name="MainApp.main")
+        #     if not fred_df.empty: db_manager.bulk_insert_or_replace('fact_macro_economic_data', fred_df) # db_manager not defined
+        #     data_fetch_flags['fred'] = True
+        # else: global_log("FRED Connector returned None, no error.", "WARNING", logger_name="MainApp.main"); data_fetch_flags['fred'] = False
+        global_log("FRED data fetching skipped as FredConnector definition not found.", "WARNING", logger_name="MainApp.main")
+        data_fetch_flags['fred'] = False
+
 
         nyfed_conn = NYFedConnector(config, logger_instance=nyfed_logger)
         nyfed_df, nyfed_err = nyfed_conn.fetch_data() # NYFedConnector processes all its URLs internally
         if nyfed_err: global_log(f"NYFed Error: {nyfed_err}", "ERROR", logger_name="MainApp.main"); data_fetch_flags['nyfed'] = False
         elif nyfed_df is not None:
             global_log(f"Fetched {len(nyfed_df)} NYFed records.", "INFO", logger_name="MainApp.main")
-            if not nyfed_df.empty: db_manager.bulk_insert_or_replace('fact_macro_economic_data', nyfed_df)
+            # if not nyfed_df.empty: db_manager.bulk_insert_or_replace('fact_macro_economic_data', nyfed_df) # db_manager not defined
+            if not nyfed_df.empty: global_log("NYFed data fetched but DB insert skipped (DatabaseManager not defined).", "INFO", logger_name="MainApp.main")
             data_fetch_flags['nyfed'] = True
         else: global_log("NYFed Connector returned None, no error.", "WARNING", logger_name="MainApp.main"); data_fetch_flags['nyfed'] = False
 
@@ -162,7 +185,8 @@ def main():
         if yf_err: global_log(f"yfinance Error: {yf_err}", "ERROR", logger_name="MainApp.main"); data_fetch_flags['yfinance_move'] = False
         elif yf_df is not None:
             global_log(f"Fetched {len(yf_df)} yfinance records for {yf_ids}.", "INFO", logger_name="MainApp.main")
-            if not yf_df.empty: db_manager.bulk_insert_or_replace('fact_stock_price', yf_df)
+            # if not yf_df.empty: db_manager.bulk_insert_or_replace('fact_stock_price', yf_df) # db_manager not defined
+            if not yf_df.empty: global_log("YFinance data fetched but DB insert skipped (DatabaseManager not defined).", "INFO", logger_name="MainApp.main")
             data_fetch_flags['yfinance_move'] = True
         else: global_log(f"yfinance for {yf_ids} returned None, no error.", "WARNING", logger_name="MainApp.main"); data_fetch_flags['yfinance_move'] = False
 
@@ -170,12 +194,17 @@ def main():
         if not all(data_fetch_flags.get(k, False) for k in ['fred', 'nyfed', 'yfinance_move']):
              global_log("One or more critical data sources may have failed. Stress index might be incomplete or skipped.", "WARNING", logger_name="MainApp.main")
 
-        macro_data = db_manager.fetch_all_for_engine('fact_macro_economic_data', start_date_cfg, end_date, date_column='metric_date')
-        stock_data = db_manager.fetch_all_for_engine('fact_stock_price', start_date_cfg, end_date, date_column='price_date')
+        # macro_data = db_manager.fetch_all_for_engine('fact_macro_economic_data', start_date_cfg, end_date, date_column='metric_date') # db_manager not defined
+        # stock_data = db_manager.fetch_all_for_engine('fact_stock_price', start_date_cfg, end_date, date_column='price_date') # db_manager not defined
+        global_log("Skipping data fetch from DB for IndicatorEngine as DatabaseManager is not defined.", "WARNING", logger_name="MainApp.main")
+        macro_data = pd.DataFrame() # Provide empty DataFrame
+        stock_data = pd.DataFrame() # Provide empty DataFrame
+
 
         if any(d is None or d.empty for d in [macro_data, stock_data]): # Check if any are None or empty
-            global_log("Insufficient data from DB for IndicatorEngine. Skipping stress index.", "ERROR", logger_name="MainApp.main")
+            global_log("Insufficient data (due to missing DB manager) for IndicatorEngine. Skipping stress index.", "ERROR", logger_name="MainApp.main")
         else:
+            # This else block will likely not be reached if macro_data and stock_data are empty DFs
             move_data_eng = stock_data[stock_data['security_id'] == '^MOVE'] if 'security_id' in stock_data.columns else pd.DataFrame()
             if move_data_eng.empty : global_log("^MOVE data not in DB for IndicatorEngine. Will proceed; calculations may be affected.", "WARNING", logger_name="MainApp.main")
 
@@ -256,11 +285,18 @@ def main():
         global_log(f"主流程 main() 發生嚴重錯誤: {e_main_flow}", "CRITICAL", logger_name="MainApp.main", exc_info=True)
         print(f"主流程 main() 發生嚴重錯誤: {e_main_flow}")
     finally:
-        if 'db_manager' in locals() and hasattr(db_manager, 'conn') and db_manager.conn is not None and not db_manager.conn.isclosed(): # Check if db_manager and conn exist
-            db_manager.disconnect()
-        else:
-            global_log("DB Manager not fully initialized or connection already closed/not established.", "DEBUG", logger_name="MainApp.main")
+        # if 'db_manager' in locals() and hasattr(db_manager, 'conn') and db_manager.conn is not None and not db_manager.conn.isclosed(): # Check if db_manager and conn exist
+        #     db_manager.disconnect() # db_manager not defined
+        # else:
+        #     global_log("DB Manager not fully initialized or connection already closed/not established.", "DEBUG", logger_name="MainApp.main")
+        global_log("Skipping DB disconnect as DatabaseManager was not used.", "DEBUG", logger_name="MainApp.main")
         global_log("\n--- 端到端原型執行完畢 ---", "INFO", logger_name="MainApp.main")
+
+        # --- Clean up detailed file logger ---
+        if 'file_handler' in locals() and file_handler is not None:
+            global_log(f"Removing detailed file handler. Log saved to {DETAILED_LOG_FILENAME}", "INFO", logger_name="MainApp.Cleanup")
+            root_logger.removeHandler(file_handler)
+            file_handler.close()
 
 if __name__ == "__main__":
     if global_log is None:

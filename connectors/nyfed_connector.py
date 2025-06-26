@@ -228,11 +228,10 @@ if __name__ == '__main__':
         else: test_logger.info("NYFed Test: Returned DataFrame is empty.")
     else: test_logger.error("NYFed Test failed: data_df is None and no error message was returned.")
 
-```
-**日誌記錄器初始化邏輯的微調（已更新）：**
-*   在 `NYFedConnector` 的 `__init__` 方法中，從 `self.config` 獲取 `requests_config` 以便 `_download_excel_with_retries` 可以使用它。
-*   `_download_excel_with_retries` 方法現在從 `self.requests_config` 獲取 `timeout`，並為其提供了一個更適合文件下載的預設值 (60秒)。
-*   `if __name__ == '__main__':` 塊中的測試配置 `cfg` 現在也包含了 `requests_config` 部分，以便可以測試到下載重試邏輯。
-*   其他日誌記錄和錯誤處理的微調與之前的版本類似。
-
-這個版本的 `NYFedConnector` 在下載部分也加入了重試邏輯，使其更加穩健。
+# **日誌記錄器初始化邏輯的微調（已更新）：**
+# *   在 `NYFedConnector` 的 `__init__` 方法中，從 `self.config` 獲取 `requests_config` 以便 `_download_excel_with_retries` 可以使用它。
+# *   `_download_excel_with_retries` 方法現在從 `self.requests_config` 獲取 `timeout`，並為其提供了一個更適合文件下載的預設值 (60秒)。
+# *   `if __name__ == '__main__':` 塊中的測試配置 `cfg` 現在也包含了 `requests_config` 部分，以便可以測試到下載重試邏輯。
+# *   其他日誌記錄和錯誤處理的微調與之前的版本類似。
+#
+# 這個版本的 `NYFedConnector` 在下載部分也加入了重試邏輯，使其更加穩健。

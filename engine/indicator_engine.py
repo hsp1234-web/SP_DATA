@@ -257,29 +257,28 @@ if __name__ == '__main__':
     assert stress_short_test is None or stress_short_test.empty, "Expected None or empty for insufficient rolling data"
     test_logger_eng.info(f"Stress Index (short data): {'None or Empty as expected' if stress_short_test is None or stress_short_test.empty else 'FAIL: Unexpectedly got data'}")
 
-```
-**對草案的增強和調整摘要（V3 更新）：**
-*   **`_prepare_data` 方法的健壯性：**
-    *   在數據透視 `macro_df` 之前，確保 `metric_date` 列已轉換為 datetime 物件並移除了無效日期。
-    *   在處理 `raw_move_df` 時，增加了對其是否為空以及是否包含必要欄位（`price_date`, `close_price`, `security_id`）的檢查。
-    *   `move_wide_df` 初始化時使用 `macro_wide_df.index`，然後用 `update` 方法填充 `^MOVE` 數據，這樣可以更好地處理 `^MOVE` 數據與宏觀數據日期不完全對齊的情況。
-    *   在合併 `macro_wide_df` 和 `move_wide_df` 之前，增加了對兩者是否都為空的判斷，並相應處理。
-*   **`calculate_dealer_stress_index` 方法的健壯性：**
-    *   在調用 `_prepare_data` 後，將結果（可能是處理過的寬表，也可能是 `None`）賦值給 `self.df_prepared`。這樣 `main.py` 在後續生成市場簡報時，總能訪問到 `IndicatorEngine` 內部最後準備好的數據狀態。
-    *   使用 `df_calc = self.df_prepared.copy()` 開始計算，確保 `self.df_prepared` 在計算衍生指標前是乾淨的基礎數據。在所有衍生指標（利差、SOFR偏差、持倉/準備金比率）計算完畢後，再次將這個包含所有輸入和基礎衍生指標的 `df_calc` 更新回 `self.df_prepared`。
-    *   對每個衍生指標的計算都增加了對其所需原始欄位是否存在的檢查。
-    *   在計算滾動百分位排名時，對 `series.notna().sum()` 的檢查使用了 `max(2, int(window * 0.5))` 作為 `min_periods`，確保至少有兩個點才能計算排名，並且至少是窗口期的一半。
-    *   `lambda x: pd.Series(x).rank(pct=True).iloc[-1] if pd.Series(x).notna().any() else np.nan` 確保了如果窗口內全是 NaN，則排名也是 NaN。
-    *   **加權與指數合成：**
-        *   權重從 `self.params` 中讀取。
-        *   只對那些成功計算出百分位排名的「活躍成分」進行加權和正規化。
-        *   在加權求和時，將百分位排名中的 NaN 用 0.5（中性值）填充。
-        *   計算有效權重之和 `effective_weights_sum`，並在計算最終指數時用其作為分母。
-    *   最終結果 `final_result_df` 會移除 `DealerStressIndex` 本身為 NaN 的行。
-*   **`if __name__ == '__main__':` 測試塊：**
-    *   更新了模擬數據以包含 `FRED/WRESBAL`。
-    *   確保了傳遞給 `IndicatorEngine` 的 `params` 字典鍵名與引擎內部期望的一致。
-    *   增加了對 `eng_test.df_prepared` 是否被正確填充並包含衍生指標（如 `spread_10y2y`）的斷言。
-    *   修正了「insufficient data」測試中，數據篩選後應使用 `.copy()`。
-
-這個版本的 `IndicatorEngine` 在數據準備和計算過程中對各種可能的數據缺失或不足的情況做了更周全的處理。
+# **對草案的增強和調整摘要（V3 更新）：**
+# *   **`_prepare_data` 方法的健壯性：**
+#     *   在數據透視 `macro_df` 之前，確保 `metric_date` 列已轉換為 datetime 物件並移除了無效日期。
+#     *   在處理 `raw_move_df` 時，增加了對其是否為空以及是否包含必要欄位（`price_date`, `close_price`, `security_id`）的檢查。
+#     *   `move_wide_df` 初始化時使用 `macro_wide_df.index`，然後用 `update` 方法填充 `^MOVE` 數據，這樣可以更好地處理 `^MOVE` 數據與宏觀數據日期不完全對齊的情況。
+#     *   在合併 `macro_wide_df` 和 `move_wide_df` 之前，增加了對兩者是否都為空的判斷，並相應處理。
+# *   **`calculate_dealer_stress_index` 方法的健壯性：**
+#     *   在調用 `_prepare_data` 後，將結果（可能是處理過的寬表，也可能是 `None`）賦值給 `self.df_prepared`。這樣 `main.py` 在後續生成市場簡報時，總能訪問到 `IndicatorEngine` 內部最後準備好的數據狀態。
+#     *   使用 `df_calc = self.df_prepared.copy()` 開始計算，確保 `self.df_prepared` 在計算衍生指標前是乾淨的基礎數據。在所有衍生指標（利差、SOFR偏差、持倉/準備金比率）計算完畢後，再次將這個包含所有輸入和基礎衍生指標的 `df_calc` 更新回 `self.df_prepared`。
+#     *   對每個衍生指標的計算都增加了對其所需原始欄位是否存在的檢查。
+#     *   在計算滾動百分位排名時，對 `series.notna().sum()` 的檢查使用了 `max(2, int(window * 0.5))` 作為 `min_periods`，確保至少有兩個點才能計算排名，並且至少是窗口期的一半。
+#     *   `lambda x: pd.Series(x).rank(pct=True).iloc[-1] if pd.Series(x).notna().any() else np.nan` 確保了如果窗口內全是 NaN，則排名也是 NaN。
+#     *   **加權與指數合成：**
+#         *   權重從 `self.params` 中讀取。
+#         *   只對那些成功計算出百分位排名的「活躍成分」進行加權和正規化。
+#         *   在加權求和時，將百分位排名中的 NaN 用 0.5（中性值）填充。
+#         *   計算有效權重之和 `effective_weights_sum`，並在計算最終指數時用其作為分母。
+#     *   最終結果 `final_result_df` 會移除 `DealerStressIndex` 本身為 NaN 的行。
+# *   **`if __name__ == '__main__':` 測試塊：**
+#     *   更新了模擬數據以包含 `FRED/WRESBAL`。
+#     *   確保了傳遞給 `IndicatorEngine` 的 `params` 字典鍵名與引擎內部期望的一致。
+#     *   增加了對 `eng_test.df_prepared` 是否被正確填充並包含衍生指標（如 `spread_10y2y`）的斷言。
+#     *   修正了「insufficient data」測試中，數據篩選後應使用 `.copy()`。
+#
+# 這個版本的 `IndicatorEngine` 在數據準備和計算過程中對各種可能的數據缺失或不足的情況做了更周全的處理。

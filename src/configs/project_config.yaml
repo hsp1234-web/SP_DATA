@@ -1,0 +1,84 @@
+# Configuration for the Financial Data Processing Prototype
+
+database:
+  path: "data/financial_data.duckdb" # Relative to project root for the atomic script
+  # schema_file: "src/configs/database_schemas.json" # Optional, if we define schemas externally
+
+data_fetch_range:
+  start_date: "2020-01-01"
+  # end_date: "YYYY-MM-DD" # Optional: If empty, main.py will use current date
+
+api_endpoints:
+  fred:
+    api_key_env: "FRED_API_KEY" # Actual key is hardcoded in main.py for this task
+    base_url: "https://api.stlouisfed.org/fred/"
+  # nyfed: # URLs are handled directly in nyfed_primary_dealer_urls
+  # yfinance: # No specific endpoint, yfinance library handles it
+
+target_metrics:
+  fred_series_ids:
+    - "DGS10"    # 10-Year Treasury Constant Maturity Rate
+    - "DGS2"     # 2-Year Treasury Constant Maturity Rate
+    - "SOFR"     # Secured Overnight Financing Rate
+    - "VIXCLS"   # CBOE Volatility Index
+    - "WRESBAL"  # Reserves Balance with Federal Reserve Banks
+  yfinance_tickers:
+    - "^MOVE"    # ICE BofA MOVE Index (Treasury Volatility)
+    # - "SPY"    # Example: S&P 500 ETF for broader market context if needed
+
+# Configuration for NYFedConnector
+nyfed_primary_dealer_urls:
+  - url: "https://www.newyorkfed.org/medialibrary/media/markets/prideal/prideal2024.xlsx"
+    file_pattern: "prideal2024.xlsx"
+    format_type: "PD_STATS_FORMAT_2013_ONWARDS"
+  - url: "https://www.newyorkfed.org/medialibrary/media/markets/prideal/prideal2023.xlsx"
+    file_pattern: "prideal2023.xlsx"
+    format_type: "PD_STATS_FORMAT_2013_ONWARDS"
+  - url: "https://www.newyorkfed.org/medialibrary/media/markets/prideal/prideal2022.xlsx"
+    file_pattern: "prideal2022.xlsx"
+    format_type: "PD_STATS_FORMAT_2013_ONWARDS"
+  # Add more historical files if needed, e.g.:
+  # - url: "https://www.newyorkfed.org/medialibrary/media/markets/prideal/prideal2021.xlsx"
+  #   file_pattern: "prideal2021.xlsx"
+  #   format_type: "PD_STATS_FORMAT_2013_ONWARDS"
+
+nyfed_format_recipes:
+  "PD_STATS_FORMAT_2013_ONWARDS":
+    header_row: 3 # Row number in Excel where headers are (1-indexed)
+    date_column: "As of Date"
+    columns_to_sum:
+      - "U.S. Treasury coupons"
+      - "U.S. Treasury bills"
+      - "U.S. Treasury floating rate notes (FRNs)"
+      - "Federal agency debt securities (MBS)" # Mortgage-Backed Securities
+      - "Federal agency debt securities (non-MBS)"
+      - "Commercial paper"
+      - "Certificates of deposit"
+      - "Bankers acceptances"
+      - "Equities"
+      - "Corporate bonds (investment grade)"
+      - "Corporate bonds (below investment grade)"
+      - "Municipal securities"
+      - "Other assets" # This can be a catch-all for various other positions
+    data_unit_multiplier: 1000000 # Data is in millions, convert to actual value
+
+# Configuration for IndicatorEngine
+indicator_engine_params:
+  rolling_window_days: 252 # Approximately 1 trading year
+  stress_index_weights:
+    sofr_deviation: 0.20
+    spread_10y2y: 0.20
+    primary_dealer_position: 0.15 # Based on NYFED data
+    move_index: 0.25
+    vix_index: 0.15
+    pos_res_ratio: 0.05 # Primary Dealer Positions to Reserves Ratio
+  stress_threshold_moderate: 40
+  stress_threshold_high: 60
+  stress_threshold_extreme: 80
+
+# General configuration for requests made by connectors
+requests_config:
+  max_retries: 3
+  base_backoff_seconds: 1
+  timeout: 30 # Default timeout for most API calls
+  download_timeout: 120 # Longer timeout for file downloads (like NYFed Excel)

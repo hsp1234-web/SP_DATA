@@ -1,13 +1,11 @@
 pandas
+pyyaml
 duckdb
-requests
-PyYAML
+SQLAlchemy
+fredapi
 yfinance
+requests
 openpyxl
-numpy
-python-json-logger
-# Ensure finlab is listed if direct finlab connector is developed and tested
-# finlab
-# Ensure specific versions if needed, e.g., pandas==1.5.3
-# Add other direct dependencies of your project here.
-# Dependencies of these packages (like pytz for pandas) will be handled by pip.
+# FinMind # Removed as it's not currently used
+tqdm
+# Add any other specific versions if necessary, e.g., pandas==2.0.3
