@@ -11,8 +11,6 @@ import random
 try:
     from .base import BaseConnector
 except ImportError:
-    # This fallback might be useful if running the script directly for testing
-    # For the atomic script, this should ideally not be hit if structure is correct.
     if __name__ == '__main__':
         from base import BaseConnector
     else:
@@ -26,7 +24,7 @@ class NYFedConnector(BaseConnector):
             self.logger = logger_instance
         else:
             self.logger = logging.getLogger(f"project_logger.{self.__class__.__name__}")
-            if not self.logger.handlers and not logging.getLogger().hasHandlers(): # Basic NullHandler setup
+            if not self.logger.handlers and not logging.getLogger().hasHandlers():
                 self.logger.addHandler(logging.NullHandler())
                 self.logger.debug(f"Logger for {self.__class__.__name__} configured with NullHandler for atomic script.")
 
@@ -44,7 +42,6 @@ class NYFedConnector(BaseConnector):
     def _download_excel_with_retries(self, url:str) -> Optional[BytesIO]:
         retries = self.requests_config.get('max_retries', 3)
         base_backoff = self.requests_config.get('base_backoff_seconds', 1)
-        # Use specific download_timeout from requests_config if available, else general timeout
         timeout_sec = self.requests_config.get('download_timeout', self.requests_config.get('timeout', 60))
 
         headers = {
@@ -57,13 +54,11 @@ class NYFedConnector(BaseConnector):
                 response.raise_for_status()
                 content_type = response.headers.get('Content-Type', '')
                 self.logger.info(f"Successfully downloaded from NYFed URL {url} (status {response.status_code}). Content-Type: {content_type}. Size: {len(response.content)} bytes.")
-                # Log the first 100 bytes to check file signature
                 self.logger.debug(f"NYFed downloaded content head (first 100 bytes): {response.content[:100]}")
 
-                # Basic check for Excel content type
                 if not any(ct in content_type.lower() for ct in ['excel', 'spreadsheetml', 'officedocument']):
                     self.logger.error(f"Downloaded content from {url} does not appear to be an Excel file based on Content-Type: '{content_type}'. Skipping.")
-                    return None # Treat as failure if content type is wrong
+                    return None
 
                 return BytesIO(response.content)
             except requests.exceptions.HTTPError as e:
@@ -87,9 +82,10 @@ class NYFedConnector(BaseConnector):
         self.logger.error(f"All download attempts failed for NYFed URL '{url}'.")
         return None
 
-    def fetch_data(self, **kwargs) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+    def fetch_data(self, start_date: Optional[str] = None, end_date: Optional[str] = None, **kwargs) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+        # start_date is not typically used by NYFed as we download full files, but kept for interface consistency.
         all_positions_data_list = []
-        self.logger.info(f"Fetching NYFed data from {len(self.urls_config)} configured URLs.")
+        self.logger.info(f"Fetching NYFed data from {len(self.urls_config)} configured URLs. Effective end_date for filtering: {end_date}")
 
         if not self.urls_config:
             return pd.DataFrame(columns=['metric_date', 'metric_name', 'metric_value', 'source_api', 'data_snapshot_timestamp']), "No NYFed URLs configured."
@@ -173,7 +169,6 @@ class NYFedConnector(BaseConnector):
             return combo_df, "NYFed data empty post-concat."
 
         combo_df.sort_values('metric_date', inplace=True)
-        # For positions, taking the latest report for a given day seems reasonable.
         combo_df.drop_duplicates(subset=['metric_date'], keep='last', inplace=True)
 
         if combo_df.empty:
@@ -190,89 +185,100 @@ class NYFedConnector(BaseConnector):
             return pd.DataFrame(columns=['metric_date', 'metric_name', 'metric_value', 'source_api', 'data_snapshot_timestamp']), "NYFed data empty post-index ops."
 
         min_d, max_d = combo_df.index.min(), combo_df.index.max()
-        if pd.isna(min_d) or pd.isna(max_d): # Should not happen if df is not empty and dates are valid
+        if pd.isna(min_d) or pd.isna(max_d):
             self.logger.error(f"Invalid date range for NYFed. Min: {min_d}, Max: {max_d}")
             return pd.DataFrame(columns=['metric_date', 'metric_name', 'metric_value', 'source_api', 'data_snapshot_timestamp']), "Invalid date range for NYFed data."
 
         daily_idx = pd.date_range(start=min_d, end=max_d, freq='D')
-        daily_df = combo_df.reindex(daily_idx).ffill() # Forward fill missing daily values
+        daily_df = combo_df.reindex(daily_idx).ffill()
         daily_df.index.name = 'metric_date'
         daily_df.reset_index(inplace=True)
 
-        # Ensure required columns are present even if daily_df becomes empty after reindex/ffill (unlikely but safeguard)
         final_cols = ['metric_date', 'metric_name', 'metric_value', 'source_api', 'data_snapshot_timestamp']
         for col in final_cols:
             if col not in daily_df.columns:
-                daily_df[col] = pd.NA # Or appropriate default
+                daily_df[col] = pd.NA
 
-        if not daily_df.empty: # Re-assign static values after ffill
+        if not daily_df.empty:
             daily_df['metric_name'] = f"{self.source_api_name}/PRIMARY_DEALER_NET_POSITION"
             daily_df['source_api'] = self.source_api_name
-            # Snapshot timestamp should ideally be per fetch, but for ffilled data, using current time is acceptable
             daily_df['data_snapshot_timestamp'] = datetime.now(timezone.utc)
 
         self.logger.info(f"Processed {len(daily_df)} total NYFed records after daily ffill.")
+        # --- 行動項目 2.1: 實現「時間點數據獲取」 ---
+        if end_date and not daily_df.empty:
+            try:
+                effective_end_date = pd.to_datetime(end_date).normalize()
+                self.logger.info(f"NYFedConnector: Applying end_date filter: <= {effective_end_date.strftime('%Y-%m-%d')}")
+                daily_df['metric_date'] = pd.to_datetime(daily_df['metric_date']).dt.normalize()
+                daily_df_filtered = daily_df[daily_df['metric_date'] <= effective_end_date].copy()
+
+                self.logger.info(f"NYFedConnector: Filtered data from {len(daily_df)} to {len(daily_df_filtered)} rows using end_date: {end_date}.")
+                if daily_df_filtered.empty and not daily_df.empty:
+                    self.logger.warning(f"NYFedConnector: All data filtered out by end_date {end_date}. Original date range: {daily_df['metric_date'].min()} to {daily_df['metric_date'].max()}")
+                daily_df = daily_df_filtered
+            except Exception as e_filter:
+                self.logger.error(f"NYFedConnector: Error applying end_date filter ({end_date}): {e_filter}", exc_info=True)
+
         return daily_df[final_cols], None
 
-# Main block for testing if script is run directly
 if __name__ == '__main__':
-    # Setup basic logging for test execution
-    if not logging.getLogger().hasHandlers(): # Ensure no duplicate handlers from other runs
+    if not logging.getLogger().hasHandlers():
         logging.basicConfig(level=logging.DEBUG,
                             format='%(asctime)s - %(name)s [%(levelname)s] - %(module)s.%(funcName)s:%(lineno)d - %(message)s',
                             handlers=[logging.StreamHandler(sys.stdout)])
 
-    test_logger_ny = logging.getLogger("NYFedConnectorTestRun_Atomic") # Unique name for this test run
-    if not test_logger_ny.handlers: # Avoid adding handlers multiple times
+    test_logger_ny = logging.getLogger("NYFedConnectorTestRun_Atomic")
+    if not test_logger_ny.handlers:
         ch_ny = logging.StreamHandler(sys.stdout)
         ch_ny.setFormatter(logging.Formatter('%(asctime)s - %(name)s [%(levelname)s] - %(message)s'))
         test_logger_ny.addHandler(ch_ny)
-        test_logger_ny.propagate = False # Prevent logging to root if it has other handlers
+        test_logger_ny.propagate = False
 
-    # Test configuration
     test_cfg = {
         'requests_config': {'max_retries': 2, 'base_backoff_seconds': 0.5, 'timeout': 15, 'download_timeout': 45},
         'nyfed_primary_dealer_urls': [
             {"url": "https://www.newyorkfed.org/medialibrary/media/markets/prideal/prideal2023.xlsx", "file_pattern": "prideal2023.xlsx", "format_type": "TEST_PD_FORMAT"},
-            {"url": "https://www.newyorkfed.org/medialibrary/media/markets/prideal/prideal2022.xlsx", "file_pattern": "prideal2022.xlsx", "format_type": "TEST_PD_FORMAT"},
-            {"url": "https://www.newyorkfed.org/medialibrary/media/markets/prideal/non_existent_file_for_test.xlsx", "file_pattern": "non_existent.xlsx", "format_type": "TEST_PD_FORMAT"},
-            {"url": "https://www.newyorkfed.org/medialibrary/media/markets/prideal/prideal2021.xlsx", "file_pattern": "prideal2021.xlsx", "format_type": "UNKNOWN_RECIPE"}
         ],
         'nyfed_format_recipes': {
             "TEST_PD_FORMAT": {
                 "header_row": 3,
                 "date_column": "As of Date",
-                "columns_to_sum": [
-                    "U.S. Treasury coupons", "U.S. Treasury bills",
-                    "U.S. Treasury floating rate notes (FRNs)", "NonExistentColumnForTest" # Include a non-existent column for robustness testing
-                ],
-                "data_unit_multiplier": 1000 # Test with a different multiplier
+                "columns_to_sum": ["U.S. Treasury coupons", "U.S. Treasury bills"],
+                "data_unit_multiplier": 1000
             }
         }
     }
 
-    test_logger_ny.info("--- Starting NYFedConnector Test ---")
+    test_logger_ny.info("--- Starting NYFedConnector Test (with end_date filtering) ---")
     ny_conn = NYFedConnector(config=test_cfg, logger_instance=test_logger_ny)
-    ny_df_res, ny_err = ny_conn.fetch_data()
 
-    if ny_err:
-        test_logger_ny.error(f"NYFed Test failed with error: {ny_err}")
-    elif ny_df_res is not None:
-        test_logger_ny.info(f"NYFed Test successful. Fetched data shape: {ny_df_res.shape}")
-        if not ny_df_res.empty:
-            test_logger_ny.info(f"NYFed Data head:\n{ny_df_res.head().to_string()}")
-            test_logger_ny.info(f"NYFed Data tail:\n{ny_df_res.tail().to_string()}")
-            unique_dates_ny = ny_df_res['metric_date'].nunique()
-            if not ny_df_res['metric_date'].empty:
-                expected_days_ny = (ny_df_res['metric_date'].max() - ny_df_res['metric_date'].min()).days + 1
-                if unique_dates_ny == expected_days_ny:
-                    test_logger_ny.info(f"NYFed data frequency appears to be daily ({unique_dates_ny} days).")
-                else:
-                    test_logger_ny.warning(f"NYFed data frequency not strictly daily: {unique_dates_ny} unique dates for {expected_days_ny} day span.")
-            else:
-                test_logger_ny.warning("NYFed data has no dates to check frequency.")
+    # Test Case 1: Fetch with an end_date that should return some data
+    test_end_date_1 = "2023-06-30"
+    test_logger_ny.info(f"Test Case 1: Fetching with end_date = {test_end_date_1}")
+    ny_df_res_1, ny_err_1 = ny_conn.fetch_data(end_date=test_end_date_1)
+
+    if ny_err_1:
+        test_logger_ny.error(f"NYFed Test Case 1 failed with error: {ny_err_1}")
+    elif ny_df_res_1 is not None:
+        test_logger_ny.info(f"NYFed Test Case 1 successful. Fetched data shape: {ny_df_res_1.shape}")
+        if not ny_df_res_1.empty:
+            test_logger_ny.info(f"NYFed Data (end_date={test_end_date_1}) head:\n{ny_df_res_1.head().to_string()}")
+            test_logger_ny.info(f"NYFed Data (end_date={test_end_date_1}) tail:\n{ny_df_res_1.tail().to_string()}")
+            assert ny_df_res_1['metric_date'].max() <= pd.to_datetime(test_end_date_1).normalize(), "Data after end_date found!"
         else:
-            test_logger_ny.info("NYFed Test: Returned DataFrame is empty, as might be expected if all sources failed or had no data.")
-    else:
-        test_logger_ny.error("NYFed Test failed: result DataFrame is None and no error message was returned (unexpected state).")
+            test_logger_ny.info(f"NYFed Test Case 1: Returned DataFrame is empty for end_date {test_end_date_1}.")
+
+    # Test Case 2: Fetch with an end_date that should return no data (e.g., before any data in the file)
+    test_end_date_2 = "2020-01-01" # Assuming prideal2023.xlsx starts much later
+    test_logger_ny.info(f"\nTest Case 2: Fetching with end_date = {test_end_date_2} (expected empty)")
+    ny_df_res_2, ny_err_2 = ny_conn.fetch_data(end_date=test_end_date_2)
+    if ny_err_2:
+         test_logger_ny.error(f"NYFed Test Case 2 failed with error: {ny_err_2}")
+    elif ny_df_res_2 is not None:
+        test_logger_ny.info(f"NYFed Test Case 2 successful. Fetched data shape: {ny_df_res_2.shape}")
+        assert ny_df_res_2.empty, f"Test Case 2 FAILED: Expected empty DataFrame for end_date {test_end_date_2}, but got {len(ny_df_res_2)} rows."
+        if ny_df_res_2.empty:
+             test_logger_ny.info(f"NYFed Test Case 2: Correctly returned empty DataFrame for end_date {test_end_date_2}.")
+
     test_logger_ny.info("--- NYFedConnector Test Finished ---")

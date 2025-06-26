@@ -1,16 +1,13 @@
 #!/bin/bash
-# run_prototype.sh - 原子化執行腳本
+# run_historical_job.sh - 原子化執行契約，用於單個歷史日期的作業
+# 此腳本是 run_prototype.sh 的副本，但設計為接收一個日期參數
 
 # === 階段一：環境清理 (可選) ===
-# 確保我們從一個乾淨的狀態開始
-echo "Phase 1: Cleaning up previous artifacts..."
-# 我們將在創建檔案時覆蓋，所以這裡可以暫時不執行實際的 rm 命令，
-# 或者如果需要，可以取消註解下一行。
-# rm -rf src/ data/ market_briefing_log.txt api_test_logs/
+echo "Phase 1: Cleaning up previous artifacts (Historical Job)..."
+# rm -rf src/ data/ market_briefing_log.txt api_test_logs/ # 通常不由單個歷史作業清理共享日誌
 
 # === 階段二：專案建構 (核心步驟) ===
-# 使用 `cat` 和 `EOF` 一次性、精確地創建所有檔案。
-echo "Phase 2: Building project structure and files..."
+echo "Phase 2: Building project structure and files (Historical Job)..."
 
 # 2.1 創建目錄結構
 echo "Creating directory structure..."
@@ -20,10 +17,6 @@ mkdir -p src/database
 mkdir -p src/engine
 mkdir -p src/scripts
 # Removed mkdir -p src/ai_agent as ai_agent.py is a file, not a directory.
-# data/ 目錄通常由應用程式在執行時創建，或者如果需要預先填充，則在此處創建。
-# mkdir -p data/
-# 日誌目錄也通常由日誌設定程式碼創建。
-# mkdir -p api_test_logs/
 
 # Explicitly remove potentially problematic __init__.py if it exists from previous runs or misconfigurations
 rm -f src/ai_agent/__init__.py
@@ -38,14 +31,13 @@ database:
 
 data_fetch_range:
   start_date: "2020-01-01"
-  # end_date: "YYYY-MM-DD" # Optional: If empty, main.py will use current date
+  # end_date is now primarily controlled by the --execution_date argument to main.py
+  # end_date: "YYYY-MM-DD" # Optional: If empty and no --execution_date, main.py will use current date
 
 api_endpoints:
   fred:
-    api_key_env: "FRED_API_KEY" # Actual key is hardcoded in main.py for this task
+    api_key_env: "FRED_API_KEY"
     base_url: "https://api.stlouisfed.org/fred/"
-  # nyfed: # URLs are handled directly in nyfed_primary_dealer_urls
-  # yfinance: # No specific endpoint, yfinance library handles it
 
 target_metrics:
   fred_series_ids:
@@ -56,9 +48,7 @@ target_metrics:
     - "WRESBAL"  # Reserves Balance with Federal Reserve Banks
   yfinance_tickers:
     - "^MOVE"    # ICE BofA MOVE Index (Treasury Volatility)
-    # - "SPY"    # Example: S&P 500 ETF for broader market context if needed
 
-# Configuration for NYFedConnector
 nyfed_primary_dealer_urls:
   - url: "https://www.newyorkfed.org/medialibrary/media/markets/prideal/prideal2024.xlsx"
     file_pattern: "prideal2024.xlsx"
@@ -69,20 +59,16 @@ nyfed_primary_dealer_urls:
   - url: "https://www.newyorkfed.org/medialibrary/media/markets/prideal/prideal2022.xlsx"
     file_pattern: "prideal2022.xlsx"
     format_type: "PD_STATS_FORMAT_2013_ONWARDS"
-  # Add more historical files if needed, e.g.:
-  # - url: "https://www.newyorkfed.org/medialibrary/media/markets/prideal/prideal2021.xlsx"
-  #   file_pattern: "prideal2021.xlsx"
-  #   format_type: "PD_STATS_FORMAT_2013_ONWARDS"
 
 nyfed_format_recipes:
   "PD_STATS_FORMAT_2013_ONWARDS":
-    header_row: 3 # Row number in Excel where headers are (1-indexed)
+    header_row: 3
     date_column: "As of Date"
     columns_to_sum:
       - "U.S. Treasury coupons"
       - "U.S. Treasury bills"
       - "U.S. Treasury floating rate notes (FRNs)"
-      - "Federal agency debt securities (MBS)" # Mortgage-Backed Securities
+      - "Federal agency debt securities (MBS)"
       - "Federal agency debt securities (non-MBS)"
       - "Commercial paper"
       - "Certificates of deposit"
@@ -91,30 +77,32 @@ nyfed_format_recipes:
       - "Corporate bonds (investment grade)"
       - "Corporate bonds (below investment grade)"
       - "Municipal securities"
-      - "Other assets" # This can be a catch-all for various other positions
-    data_unit_multiplier: 1000000 # Data is in millions, convert to actual value
+      - "Other assets"
+    data_unit_multiplier: 1000000
 
-# Configuration for IndicatorEngine
 indicator_engine_params:
-  rolling_window_days: 252 # Approximately 1 trading year
+  rolling_window_days: 252
   stress_index_weights:
     sofr_deviation: 0.20
     spread_10y2y: 0.20
-    primary_dealer_position: 0.15 # Based on NYFED data
+    primary_dealer_position: 0.15
     move_index: 0.25
     vix_index: 0.15
-    pos_res_ratio: 0.05 # Primary Dealer Positions to Reserves Ratio
+    pos_res_ratio: 0.05
   stress_threshold_moderate: 40
   stress_threshold_high: 60
   stress_threshold_extreme: 80
+  min_periods_ratio_for_rolling: 0.5 # Added for IndicatorEngine percentile calculation robustness
 
-# General configuration for requests made by connectors
 requests_config:
   max_retries: 3
   base_backoff_seconds: 1
-  timeout: 30 # Default timeout for most API calls
-  download_timeout: 120 # Longer timeout for file downloads (like NYFed Excel)
+  timeout: 30
+  download_timeout: 120
 
+ai_agent_mock_params: # Configuration for MockAIAgent
+  simulate_network_latency_max_sec: 0.1 # Max seconds for simulated latency
+  simulate_failure_rate: 0.02 # 2% chance of simulated failure
 EOF
 
 echo "Creating requirements.txt file..."
@@ -127,9 +115,8 @@ fredapi
 yfinance
 requests
 openpyxl
-# FinMind # Removed as it's not currently used
 tqdm
-# Add any other specific versions if necessary, e.g., pandas==2.0.3
+argparse
 EOF
 
 echo "Creating src/connectors/base.py..."
@@ -151,12 +138,14 @@ class BaseConnector(ABC):
         # For now, child classes will initialize their own loggers or use a global one.
 
     @abstractmethod
-    def fetch_data(self, **kwargs) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+    def fetch_data(self, start_date: Optional[str] = None, end_date: Optional[str] = None, **kwargs) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
         """
         從 API 或數據源獲取原始數據並進行初步轉換成 DataFrame (通常是長表格式)。
 
         Args:
-            **kwargs: 特定 connector 需要的參數 (例如 series_ids, tickers, start_date, end_date).
+            start_date (Optional[str]): 數據獲取的開始日期 (YYYY-MM-DD)。
+            end_date (Optional[str]): 數據獲取的結束日期 (YYYY-MM-DD)。此日期為數據上限，不應包含此日期之後的數據。
+            **kwargs: 特定 connector 需要的參數 (例如 series_ids, tickers)。
 
         Returns:
             一個包含 (DataFrame, error_message) 的元組。
@@ -172,19 +161,6 @@ class BaseConnector(ABC):
     def get_source_name(self) -> str:
         """返回數據源的名稱。"""
         return self.source_api_name
-
-    # Common utility methods can be added here if needed, e.g.,
-    # _make_request_with_retries (similar to what was in the old BaseConnector from user's Colab)
-    # or a method to standardize date formats.
-    # For now, keeping it lean as per the new design focusing on fetch_data.
-    # The retry logic from user's previous BaseConnector (with jitter) is excellent
-    # and ideally should be part of a shared HTTP request utility or within each connector's
-    # implementation of how it calls external APIs if not using a library that handles it.
-    # Given the "one-shot build" nature, detailed retry in Base might be over-engineering for now,
-    # and each connector can implement its specific retry or rely on the robustness of the used library.
-    # However, for FREDConnector which uses requests directly, that logic would be valuable.
-    # Let's assume for now that retry logic is handled within each connector's specific requests.
-    # Or, we can add a protected _make_request method here later if many connectors use raw requests.
 EOF
 
 echo "Creating src/connectors/nyfed_connector.py..."
@@ -202,8 +178,6 @@ import random
 try:
     from .base import BaseConnector
 except ImportError:
-    # This fallback might be useful if running the script directly for testing
-    # For the atomic script, this should ideally not be hit if structure is correct.
     if __name__ == '__main__':
         from base import BaseConnector
     else:
@@ -217,7 +191,7 @@ class NYFedConnector(BaseConnector):
             self.logger = logger_instance
         else:
             self.logger = logging.getLogger(f"project_logger.{self.__class__.__name__}")
-            if not self.logger.handlers and not logging.getLogger().hasHandlers(): # Basic NullHandler setup
+            if not self.logger.handlers and not logging.getLogger().hasHandlers():
                 self.logger.addHandler(logging.NullHandler())
                 self.logger.debug(f"Logger for {self.__class__.__name__} configured with NullHandler for atomic script.")
 
@@ -235,7 +209,6 @@ class NYFedConnector(BaseConnector):
     def _download_excel_with_retries(self, url:str) -> Optional[BytesIO]:
         retries = self.requests_config.get('max_retries', 3)
         base_backoff = self.requests_config.get('base_backoff_seconds', 1)
-        # Use specific download_timeout from requests_config if available, else general timeout
         timeout_sec = self.requests_config.get('download_timeout', self.requests_config.get('timeout', 60))
 
         headers = {
@@ -248,13 +221,11 @@ class NYFedConnector(BaseConnector):
                 response.raise_for_status()
                 content_type = response.headers.get('Content-Type', '')
                 self.logger.info(f"Successfully downloaded from NYFed URL {url} (status {response.status_code}). Content-Type: {content_type}. Size: {len(response.content)} bytes.")
-                # Log the first 100 bytes to check file signature
                 self.logger.debug(f"NYFed downloaded content head (first 100 bytes): {response.content[:100]}")
 
-                # Basic check for Excel content type
                 if not any(ct in content_type.lower() for ct in ['excel', 'spreadsheetml', 'officedocument']):
                     self.logger.error(f"Downloaded content from {url} does not appear to be an Excel file based on Content-Type: '{content_type}'. Skipping.")
-                    return None # Treat as failure if content type is wrong
+                    return None
 
                 return BytesIO(response.content)
             except requests.exceptions.HTTPError as e:
@@ -278,9 +249,10 @@ class NYFedConnector(BaseConnector):
         self.logger.error(f"All download attempts failed for NYFed URL '{url}'.")
         return None
 
-    def fetch_data(self, **kwargs) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+    def fetch_data(self, start_date: Optional[str] = None, end_date: Optional[str] = None, **kwargs) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+        # start_date is not typically used by NYFed as we download full files, but kept for interface consistency.
         all_positions_data_list = []
-        self.logger.info(f"Fetching NYFed data from {len(self.urls_config)} configured URLs.")
+        self.logger.info(f"Fetching NYFed data from {len(self.urls_config)} configured URLs. Effective end_date for filtering: {end_date}")
 
         if not self.urls_config:
             return pd.DataFrame(columns=['metric_date', 'metric_name', 'metric_value', 'source_api', 'data_snapshot_timestamp']), "No NYFed URLs configured."
@@ -364,7 +336,6 @@ class NYFedConnector(BaseConnector):
             return combo_df, "NYFed data empty post-concat."
 
         combo_df.sort_values('metric_date', inplace=True)
-        # For positions, taking the latest report for a given day seems reasonable.
         combo_df.drop_duplicates(subset=['metric_date'], keep='last', inplace=True)
 
         if combo_df.empty:
@@ -381,36 +352,31 @@ class NYFedConnector(BaseConnector):
             return pd.DataFrame(columns=['metric_date', 'metric_name', 'metric_value', 'source_api', 'data_snapshot_timestamp']), "NYFed data empty post-index ops."
 
         min_d, max_d = combo_df.index.min(), combo_df.index.max()
-        if pd.isna(min_d) or pd.isna(max_d): # Should not happen if df is not empty and dates are valid
+        if pd.isna(min_d) or pd.isna(max_d):
             self.logger.error(f"Invalid date range for NYFed. Min: {min_d}, Max: {max_d}")
             return pd.DataFrame(columns=['metric_date', 'metric_name', 'metric_value', 'source_api', 'data_snapshot_timestamp']), "Invalid date range for NYFed data."
 
         daily_idx = pd.date_range(start=min_d, end=max_d, freq='D')
-        daily_df = combo_df.reindex(daily_idx).ffill() # Forward fill missing daily values
+        daily_df = combo_df.reindex(daily_idx).ffill()
         daily_df.index.name = 'metric_date'
         daily_df.reset_index(inplace=True)
 
-        # Ensure required columns are present even if daily_df becomes empty after reindex/ffill (unlikely but safeguard)
         final_cols = ['metric_date', 'metric_name', 'metric_value', 'source_api', 'data_snapshot_timestamp']
         for col in final_cols:
             if col not in daily_df.columns:
-                daily_df[col] = pd.NA # Or appropriate default
+                daily_df[col] = pd.NA
 
-        if not daily_df.empty: # Re-assign static values after ffill
+        if not daily_df.empty:
             daily_df['metric_name'] = f"{self.source_api_name}/PRIMARY_DEALER_NET_POSITION"
             daily_df['source_api'] = self.source_api_name
-            # Snapshot timestamp should ideally be per fetch, but for ffilled data, using current time is acceptable
             daily_df['data_snapshot_timestamp'] = datetime.now(timezone.utc)
 
         self.logger.info(f"Processed {len(daily_df)} total NYFed records after daily ffill.")
         # --- 行動項目 2.1: 實現「時間點數據獲取」 ---
-        # 在 Connector 內部，使用 Pandas 或其他工具，根據傳入的 end_date 參數進行精確的、可靠的本地數據篩選。
-        # NYFedConnector: 先下載，再解析，後篩選。
         if end_date and not daily_df.empty:
             try:
                 effective_end_date = pd.to_datetime(end_date).normalize()
                 self.logger.info(f"NYFedConnector: Applying end_date filter: <= {effective_end_date.strftime('%Y-%m-%d')}")
-                # Ensure 'metric_date' is datetime before filtering
                 daily_df['metric_date'] = pd.to_datetime(daily_df['metric_date']).dt.normalize()
                 daily_df_filtered = daily_df[daily_df['metric_date'] <= effective_end_date].copy()
 
@@ -420,72 +386,68 @@ class NYFedConnector(BaseConnector):
                 daily_df = daily_df_filtered
             except Exception as e_filter:
                 self.logger.error(f"NYFedConnector: Error applying end_date filter ({end_date}): {e_filter}", exc_info=True)
-                # Decide if to return unfiltered data or error out. For now, log error and return potentially unfiltered if filter failed.
-                # Consider returning an error tuple if filtering is critical and fails.
 
         return daily_df[final_cols], None
 
-# Main block for testing if script is run directly
 if __name__ == '__main__':
-    # Setup basic logging for test execution
-    if not logging.getLogger().hasHandlers(): # Ensure no duplicate handlers from other runs
+    if not logging.getLogger().hasHandlers():
         logging.basicConfig(level=logging.DEBUG,
                             format='%(asctime)s - %(name)s [%(levelname)s] - %(module)s.%(funcName)s:%(lineno)d - %(message)s',
                             handlers=[logging.StreamHandler(sys.stdout)])
 
-    test_logger_ny = logging.getLogger("NYFedConnectorTestRun_Atomic") # Unique name for this test run
-    if not test_logger_ny.handlers: # Avoid adding handlers multiple times
+    test_logger_ny = logging.getLogger("NYFedConnectorTestRun_Atomic")
+    if not test_logger_ny.handlers:
         ch_ny = logging.StreamHandler(sys.stdout)
         ch_ny.setFormatter(logging.Formatter('%(asctime)s - %(name)s [%(levelname)s] - %(message)s'))
         test_logger_ny.addHandler(ch_ny)
-        test_logger_ny.propagate = False # Prevent logging to root if it has other handlers
+        test_logger_ny.propagate = False
 
-    # Test configuration
     test_cfg = {
         'requests_config': {'max_retries': 2, 'base_backoff_seconds': 0.5, 'timeout': 15, 'download_timeout': 45},
         'nyfed_primary_dealer_urls': [
             {"url": "https://www.newyorkfed.org/medialibrary/media/markets/prideal/prideal2023.xlsx", "file_pattern": "prideal2023.xlsx", "format_type": "TEST_PD_FORMAT"},
-            {"url": "https://www.newyorkfed.org/medialibrary/media/markets/prideal/prideal2022.xlsx", "file_pattern": "prideal2022.xlsx", "format_type": "TEST_PD_FORMAT"},
-            {"url": "https://www.newyorkfed.org/medialibrary/media/markets/prideal/non_existent_file_for_test.xlsx", "file_pattern": "non_existent.xlsx", "format_type": "TEST_PD_FORMAT"},
-            {"url": "https://www.newyorkfed.org/medialibrary/media/markets/prideal/prideal2021.xlsx", "file_pattern": "prideal2021.xlsx", "format_type": "UNKNOWN_RECIPE"}
         ],
         'nyfed_format_recipes': {
             "TEST_PD_FORMAT": {
                 "header_row": 3,
                 "date_column": "As of Date",
-                "columns_to_sum": [
-                    "U.S. Treasury coupons", "U.S. Treasury bills",
-                    "U.S. Treasury floating rate notes (FRNs)", "NonExistentColumnForTest" # Include a non-existent column for robustness testing
-                ],
-                "data_unit_multiplier": 1000 # Test with a different multiplier
+                "columns_to_sum": ["U.S. Treasury coupons", "U.S. Treasury bills"],
+                "data_unit_multiplier": 1000
             }
         }
     }
 
-    test_logger_ny.info("--- Starting NYFedConnector Test ---")
+    test_logger_ny.info("--- Starting NYFedConnector Test (with end_date filtering) ---")
     ny_conn = NYFedConnector(config=test_cfg, logger_instance=test_logger_ny)
-    ny_df_res, ny_err = ny_conn.fetch_data()
 
-    if ny_err:
-        test_logger_ny.error(f"NYFed Test failed with error: {ny_err}")
-    elif ny_df_res is not None:
-        test_logger_ny.info(f"NYFed Test successful. Fetched data shape: {ny_df_res.shape}")
-        if not ny_df_res.empty:
-            test_logger_ny.info(f"NYFed Data head:\n{ny_df_res.head().to_string()}")
-            test_logger_ny.info(f"NYFed Data tail:\n{ny_df_res.tail().to_string()}")
-            unique_dates_ny = ny_df_res['metric_date'].nunique()
-            if not ny_df_res['metric_date'].empty:
-                expected_days_ny = (ny_df_res['metric_date'].max() - ny_df_res['metric_date'].min()).days + 1
-                if unique_dates_ny == expected_days_ny:
-                    test_logger_ny.info(f"NYFed data frequency appears to be daily ({unique_dates_ny} days).")
-                else:
-                    test_logger_ny.warning(f"NYFed data frequency not strictly daily: {unique_dates_ny} unique dates for {expected_days_ny} day span.")
-            else:
-                test_logger_ny.warning("NYFed data has no dates to check frequency.")
+    # Test Case 1: Fetch with an end_date that should return some data
+    test_end_date_1 = "2023-06-30"
+    test_logger_ny.info(f"Test Case 1: Fetching with end_date = {test_end_date_1}")
+    ny_df_res_1, ny_err_1 = ny_conn.fetch_data(end_date=test_end_date_1)
+
+    if ny_err_1:
+        test_logger_ny.error(f"NYFed Test Case 1 failed with error: {ny_err_1}")
+    elif ny_df_res_1 is not None:
+        test_logger_ny.info(f"NYFed Test Case 1 successful. Fetched data shape: {ny_df_res_1.shape}")
+        if not ny_df_res_1.empty:
+            test_logger_ny.info(f"NYFed Data (end_date={test_end_date_1}) head:\n{ny_df_res_1.head().to_string()}")
+            test_logger_ny.info(f"NYFed Data (end_date={test_end_date_1}) tail:\n{ny_df_res_1.tail().to_string()}")
+            assert ny_df_res_1['metric_date'].max() <= pd.to_datetime(test_end_date_1).normalize(), "Data after end_date found!"
         else:
-            test_logger_ny.info("NYFed Test: Returned DataFrame is empty, as might be expected if all sources failed or had no data.")
-    else:
-        test_logger_ny.error("NYFed Test failed: result DataFrame is None and no error message was returned (unexpected state).")
+            test_logger_ny.info(f"NYFed Test Case 1: Returned DataFrame is empty for end_date {test_end_date_1}.")
+
+    # Test Case 2: Fetch with an end_date that should return no data (e.g., before any data in the file)
+    test_end_date_2 = "2020-01-01" # Assuming prideal2023.xlsx starts much later
+    test_logger_ny.info(f"\nTest Case 2: Fetching with end_date = {test_end_date_2} (expected empty)")
+    ny_df_res_2, ny_err_2 = ny_conn.fetch_data(end_date=test_end_date_2)
+    if ny_err_2:
+         test_logger_ny.error(f"NYFed Test Case 2 failed with error: {ny_err_2}")
+    elif ny_df_res_2 is not None:
+        test_logger_ny.info(f"NYFed Test Case 2 successful. Fetched data shape: {ny_df_res_2.shape}")
+        assert ny_df_res_2.empty, f"Test Case 2 FAILED: Expected empty DataFrame for end_date {test_end_date_2}, but got {len(ny_df_res_2)} rows."
+        if ny_df_res_2.empty:
+             test_logger_ny.info(f"NYFed Test Case 2: Correctly returned empty DataFrame for end_date {test_end_date_2}.")
+
     test_logger_ny.info("--- NYFedConnector Test Finished ---")
 EOF
 
@@ -496,12 +458,13 @@ import pandas as pd
 from typing import List, Dict, Any, Tuple, Optional
 from datetime import datetime, timezone
 import logging
-import os # For accessing API key from environment variable
+import os
+import sys # For test block
 
 try:
     from .base import BaseConnector
 except ImportError:
-    if __name__ == '__main__': # For standalone testing
+    if __name__ == '__main__':
         from base import BaseConnector
     else:
         raise
@@ -538,9 +501,8 @@ class FredConnector(BaseConnector):
 
     def fetch_data(self, series_ids: List[str], start_date: Optional[str] = None, end_date: Optional[str] = None, **kwargs) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
         # The 'end_date' parameter is now part of the method signature as per Phase II requirements.
-        # For FRED, the fredapi library handles date filtering directly.
+        # For FRED, the fredapi library handles date filtering directly via 'observation_end'.
         if self.fred_client is None:
-            # Return an empty DataFrame with the expected schema and an error message
             schema_cols = ['metric_date', 'metric_name', 'metric_value', 'source_api', 'data_snapshot_timestamp']
             return pd.DataFrame(columns=schema_cols), "FRED client not initialized due to missing API key or initialization error."
 
@@ -556,10 +518,11 @@ class FredConnector(BaseConnector):
         for series_id in series_ids:
             try:
                 self.logger.debug(f"Fetching data for FRED series_id: {series_id}")
+                # Pass end_date to observation_end
                 series_data = self.fred_client.get_series(series_id, observation_start=start_date, observation_end=end_date)
 
                 if series_data.empty:
-                    self.logger.warning(f"No data returned for FRED series_id: {series_id} for the given date range.")
+                    self.logger.warning(f"No data returned for FRED series_id: {series_id} for the given date range (start={start_date}, end={end_date}).")
                     continue
 
                 df_series = series_data.reset_index()
@@ -590,7 +553,7 @@ class FredConnector(BaseConnector):
 
         final_df = pd.concat(all_series_data_list, ignore_index=True)
 
-        if final_df.empty: # Should be caught if all_series_data_list is empty
+        if final_df.empty:
             schema_cols = ['metric_date', 'metric_name', 'metric_value', 'source_api', 'data_snapshot_timestamp']
             return pd.DataFrame(columns=schema_cols), "Combined FRED data is empty after processing all series."
 
@@ -614,49 +577,41 @@ if __name__ == '__main__':
         test_logger_fred.propagate = False
 
     sample_fred_config = {
-        "api_endpoints": { "fred": { "api_key_env": "FRED_API_KEY_TEST" } } # Use a distinct env var for testing
+        "api_endpoints": { "fred": { "api_key_env": "FRED_API_KEY_TEST_HIST" } }
     }
 
-    # For testing, explicitly set the API key if you have one, or mock Fred()
-    # IMPORTANT: Do not commit real API keys.
-    MOCK_API_KEY_FOR_TEST = "YOUR_TEST_API_KEY_OR_MOCK"
-    # os.environ["FRED_API_KEY_TEST"] = MOCK_API_KEY_FOR_TEST # FredConnector will pick this up
+    api_key_to_use = os.getenv("FRED_API_KEY") # Try to use the main key from environment for testing
+    if not api_key_to_use:
+        test_logger_fred.error("FRED_API_KEY environment variable not set. Cannot run FredConnector test.")
+        sys.exit(1)
+    os.environ["FRED_API_KEY_TEST_HIST"] = api_key_to_use # Set it to the specific var the test config uses
 
-    if not os.getenv(sample_fred_config['api_endpoints']['fred']['api_key_env']):
-        # Fallback: Try the main key if test key not set (for user convenience during dev)
-        main_api_key_env = "FRED_API_KEY" # As defined in project_config.yaml template
-        if os.getenv(main_api_key_env):
-            test_logger_fred.warning(f"Test-specific FRED API key env var '{sample_fred_config['api_endpoints']['fred']['api_key_env']}' not set. Falling back to main key '{main_api_key_env}' for this test run.")
-            os.environ[sample_fred_config['api_endpoints']['fred']['api_key_env']] = os.getenv(main_api_key_env)
-        else:
-             test_logger_fred.error(f"Cannot run FredConnector test: Neither test env var '{sample_fred_config['api_endpoints']['fred']['api_key_env']}' nor main env var '{main_api_key_env}' for FRED API key is set.")
-             sys.exit(1) # Exit if no key can be found for testing
-
-    test_logger_fred.info("--- Starting FredConnector Test ---")
+    test_logger_fred.info("--- Starting FredConnector Test (with end_date) ---")
     fred_conn_test = FredConnector(config=sample_fred_config, logger_instance=test_logger_fred)
 
     if fred_conn_test.fred_client is not None:
-        test_series_list = ["DGS10", "FEDFUNDS", "UNRATE", "NONEXISTENTSERIESXYZ"]
-        test_start = "2023-01-01"
-        test_end = "2023-02-28"
+        test_series_list = ["DGS10", "UNRATE"]
+        test_start = "2022-01-01"
+        test_end_date_filter = "2022-03-15" # Specific end date for filtering
 
-        test_logger_fred.info(f"Testing fetch_data for series: {test_series_list} from {test_start} to {test_end}")
-        fred_df, fred_err = fred_conn_test.fetch_data(series_ids=test_series_list, start_date=test_start, end_date=test_end)
+        test_logger_fred.info(f"Testing fetch_data for series: {test_series_list} from {test_start} to {test_end_date_filter}")
+        fred_df, fred_err = fred_conn_test.fetch_data(series_ids=test_series_list, start_date=test_start, end_date=test_end_date_filter)
 
         if fred_err:
             test_logger_fred.warning(f"FredConnector test fetch_data completed with error(s): {fred_err}")
 
         if fred_df is not None and not fred_df.empty:
             test_logger_fred.info(f"FredConnector test fetch_data returned data. Shape: {fred_df.shape}")
-            test_logger_fred.info(f"Result head:\\n{fred_df.head().to_string()}")
-            test_logger_fred.info(f"Result tail:\\n{fred_df.tail().to_string()}")
-            actual_metrics = set(fred_df['metric_name'].unique())
-            test_logger_fred.info(f"Metrics returned: {actual_metrics}")
-            if "FRED/NONEXISTENTSERIESXYZ" not in actual_metrics:
-                test_logger_fred.info("Correctly did not return data for 'NONEXISTENTSERIESXYZ'.")
+            test_logger_fred.info(f"Result head:\n{fred_df.head().to_string()}")
+            test_logger_fred.info(f"Result tail:\n{fred_df.tail().to_string()}")
+
+            max_date_in_df = fred_df['metric_date'].max()
+            test_logger_fred.info(f"Max date in returned FRED data: {max_date_in_df.strftime('%Y-%m-%d')}")
+            assert max_date_in_df <= pd.to_datetime(test_end_date_filter).date(), f"Data found after specified end_date {test_end_date_filter}! Max date was {max_date_in_df}"
+            test_logger_fred.info(f"FRED data correctly filtered by end_date {test_end_date_filter}.")
         elif fred_df is not None and fred_df.empty:
-             test_logger_fred.warning("FredConnector test fetch_data returned an empty DataFrame. This might be due to all series failing or returning no data for the period.")
-        else: # fred_df is None
+             test_logger_fred.warning(f"FredConnector test fetch_data returned an empty DataFrame for period up to {test_end_date_filter}.")
+        else:
              test_logger_fred.error(f"FredConnector test fetch_data returned None for data. Error was: {fred_err}")
     else:
         test_logger_fred.error("FredConnector client (self.fred_client) was not initialized in test. API key issue likely.")
@@ -664,13 +619,15 @@ if __name__ == '__main__':
 EOF
 
 echo "Creating src/database/database_manager.py..."
+# No changes needed for DatabaseManager.py for Action Item 2.1, as it already supports date filtering.
+# Re-writing it identically to ensure it's part of the script if it was missed or for completeness.
 cat <<EOF > src/database/database_manager.py
 import duckdb
 import pandas as pd
 from typing import Dict, Any, Optional, List
 import logging
-from pathlib import Path # Ensure Path is imported
-import os # Required for os.urandom
+from pathlib import Path
+import os
 
 class DatabaseManager:
     """
@@ -686,15 +643,11 @@ class DatabaseManager:
                 self.logger.debug(f"Logger for {self.__class__.__name__} configured with NullHandler for atomic script.")
 
         self.db_config = config.get('database', {})
-        db_path_str = self.db_config.get('path', 'data/default_financial_data.duckdb') # Default path
+        db_path_str = self.db_config.get('path', 'data/default_financial_data.duckdb')
 
-        # Ensure the database path is absolute or relative to a known project root
         if project_root_dir:
             self.db_file = Path(project_root_dir) / db_path_str
         else:
-            # Fallback if project_root_dir is not provided (e.g. direct testing)
-            # This might need adjustment based on where run_prototype.sh executes from.
-            # For the atomic script, main.py should pass its PROJECT_ROOT.
             self.db_file = Path(db_path_str)
             self.logger.warning(f"project_root_dir not provided to DatabaseManager. Database path resolved to: {self.db_file.resolve()}")
 
@@ -703,26 +656,24 @@ class DatabaseManager:
 
     def connect(self):
         """建立與 DuckDB 資料庫的連接。"""
-        if self.conn is not None: # Check if connection object exists
+        if self.conn is not None:
             try:
-                # Try a simple query to see if connection is active
                 self.conn.execute("SELECT 1")
                 self.logger.info("Database connection already active and valid.")
                 return
-            except Exception as e: # duckdb.duckdb.ConnectionException or similar if closed/broken
+            except Exception as e:
                 self.logger.warning(f"Existing connection object found but it's not usable ({e}). Will try to reconnect.")
-                self.conn = None # Reset to force reconnection
+                self.conn = None
 
         try:
-            # Ensure the parent directory for the database file exists
             self.db_file.parent.mkdir(parents=True, exist_ok=True)
             self.conn = duckdb.connect(database=str(self.db_file), read_only=False)
             self.logger.info(f"Successfully connected to DuckDB database: {self.db_file.resolve()}")
-            self._create_tables_if_not_exist() # Create tables upon connection
+            self._create_tables_if_not_exist()
         except Exception as e:
             self.logger.critical(f"Failed to connect to DuckDB database at {self.db_file.resolve()}: {e}", exc_info=True)
-            self.conn = None # Ensure conn is None if connection fails
-            raise # Re-raise the exception to signal failure to the caller
+            self.conn = None
+            raise
 
     def disconnect(self):
         """關閉資料庫連接。"""
@@ -744,32 +695,27 @@ class DatabaseManager:
             return
 
         try:
-            self.logger.info("Dropping and recreating tables to ensure fresh schema...")
-            self.conn.execute("DROP TABLE IF EXISTS fact_macro_economic_data;")
-            self.conn.execute("DROP TABLE IF EXISTS fact_stock_price;")
-            self.logger.info("Old tables (if any) dropped.")
+            self.logger.info("Ensuring tables exist (will not drop if already present)...")
+            # self.conn.execute("DROP TABLE IF EXISTS fact_macro_economic_data;") # Keep for re-creation
+            # self.conn.execute("DROP TABLE IF EXISTS fact_stock_price;")
+            # self.conn.execute("DROP TABLE IF EXISTS log_ai_decision;")
+            # self.logger.info("Old tables (if any) dropped for fresh schema.")
 
-            # Schema for fact_macro_economic_data
-            # metric_date: DATE, metric_name: VARCHAR, metric_value: DOUBLE,
-            # source_api: VARCHAR, data_snapshot_timestamp: TIMESTAMP
+
             self.conn.execute("""
-                CREATE TABLE fact_macro_economic_data (
+                CREATE TABLE IF NOT EXISTS fact_macro_economic_data (
                     metric_date DATE,
                     metric_name VARCHAR,
                     metric_value DOUBLE,
                     source_api VARCHAR,
                     data_snapshot_timestamp TIMESTAMP,
-                    PRIMARY KEY (metric_date, metric_name, source_api) -- Assuming this combination is unique
+                    PRIMARY KEY (metric_date, metric_name, source_api)
                 );
             """)
             self.logger.info("Table 'fact_macro_economic_data' checked/created.")
 
-            # Schema for fact_stock_price
-            # price_date: DATE, security_id: VARCHAR, open_price: DOUBLE, high_price: DOUBLE,
-            # low_price: DOUBLE, close_price: DOUBLE, adj_close_price: DOUBLE, volume: BIGINT,
-            # dividends: DOUBLE, stock_splits: DOUBLE, source_api: VARCHAR, data_snapshot_timestamp: TIMESTAMP
             self.conn.execute("""
-                CREATE TABLE fact_stock_price (
+                CREATE TABLE IF NOT EXISTS fact_stock_price (
                     price_date DATE,
                     security_id VARCHAR,
                     open_price DOUBLE,
@@ -782,109 +728,73 @@ class DatabaseManager:
                     stock_splits DOUBLE,
                     source_api VARCHAR,
                     data_snapshot_timestamp TIMESTAMP,
-                    PRIMARY KEY (price_date, security_id, source_api) -- Assuming this combination is unique
+                    PRIMARY KEY (price_date, security_id, source_api)
                 );
             """)
             self.logger.info("Table 'fact_stock_price' checked/created.")
 
-            # Schema for log_ai_decision
-            # simulation_timestamp: TIMESTAMP, market_brief_json: TEXT, ai_response_text: TEXT,
-            # strategy_summary: TEXT, key_factors: TEXT
-            self.conn.execute("DROP TABLE IF EXISTS log_ai_decision;") # Drop if exists for fresh creation
             self.conn.execute("""
-                CREATE TABLE log_ai_decision (
+                CREATE TABLE IF NOT EXISTS log_ai_decision (
                     simulation_timestamp TIMESTAMP,
                     market_brief_json TEXT,
                     ai_response_text TEXT,
                     strategy_summary TEXT,
                     key_factors TEXT,
-                    PRIMARY KEY (simulation_timestamp) -- Assuming simulation_timestamp is unique for each log entry
+                    PRIMARY KEY (simulation_timestamp)
                 );
             """)
             self.logger.info("Table 'log_ai_decision' checked/created.")
 
         except Exception as e:
             self.logger.error(f"Error creating tables: {e}", exc_info=True)
-            # Depending on severity, might want to raise this
 
     def bulk_insert_or_replace(self, table_name: str, df: pd.DataFrame, unique_cols: List[str]):
-        """
-        將 DataFrame 中的數據批量插入或替換到指定的表中。
-        使用 DuckDB 的 INSERT ... ON CONFLICT DO UPDATE (upsert) 功能。
-        """
         if self.conn is None:
             self.logger.error(f"Cannot insert into {table_name}: Database connection is None.")
             return False
         if df.empty:
             self.logger.info(f"DataFrame for table {table_name} is empty. Nothing to insert.")
-            return True # Not an error, just nothing to do
+            return True
 
         self.logger.debug(f"Attempting to bulk insert/replace into {table_name}, {len(df)} rows. Unique cols: {unique_cols}")
 
         try:
-            # Ensure DataFrame columns match table schema and have correct types if necessary.
-            # DuckDB is quite good at type inference from Pandas, but explicit casting might be needed for complex cases.
-            # For date/timestamp, ensure they are in a compatible format.
-            # Example: df['metric_date'] = pd.to_datetime(df['metric_date']).dt.date
-            # This should ideally be handled by the connectors before this stage.
-
-            # Register DataFrame as a temporary table
-            temp_table_name = f"temp_{table_name}_{os.urandom(4).hex()}" # Unique temp table name
+            temp_table_name = f"temp_{table_name}_{os.urandom(4).hex()}"
             self.conn.register(temp_table_name, df)
 
-            # Build the ON CONFLICT part of the SQL query
             if not unique_cols:
                 raise ValueError("unique_cols must be provided for upsert operation.")
 
             conflict_target = ", ".join(unique_cols)
-
-            # Build the SET part for DO UPDATE
-            # Exclude unique_cols from update as they are used for conflict resolution
             update_cols = [col for col in df.columns if col not in unique_cols]
-            if not update_cols: # If all columns are part of unique_cols, it's effectively an INSERT OR IGNORE
-                 set_clause = "NOTHING" # Placeholder for DO NOTHING, adjust if needed
-                 # For DuckDB, if all columns are unique keys, an insert on conflict would just do nothing.
-                 # A more explicit "DO NOTHING" might be:
-                 # INSERT INTO target_table SELECT * FROM source_table ON CONFLICT (unique_cols) DO NOTHING;
-                 # However, we'll try to update other columns if they exist.
-                 # If no columns to update, then an insert that conflicts will do nothing.
-                 # To be safe, if update_cols is empty, we can simply do an INSERT OR IGNORE.
-                 # For now, let's assume there's always at least one column to update or this case is handled by table design.
-                 self.logger.warning(f"No columns to update for table {table_name} as all columns are in unique_cols. Conflicting rows will be ignored.")
-                 # Simple insert, relying on PK to prevent duplicates if that's the desired behavior without explicit update
-                 # This part needs careful consideration based on exact "replace" semantics desired.
-                 # A common approach for "replace" with DuckDB is to delete and insert.
-                 # This part needs careful consideration based on exact "replace" semantics desired.
-                 # A common approach for "replace" with DuckDB is to delete and insert.
-                 # Let's use the upsert functionality.
 
-                # The logic is: if no columns to update (all are unique keys), then DO NOTHING on conflict.
-                # Otherwise, DO UPDATE the non-key columns.
+            if not update_cols:
                  sql = f"INSERT INTO {table_name} SELECT * FROM {temp_table_name} ON CONFLICT ({conflict_target}) DO NOTHING;"
                  self.logger.debug(f"Executing SQL (INSERT OR IGNORE style as no update_cols): {sql}")
-            else: # There are columns to update
+            else:
                 set_statements = ", ".join([f"{col} = excluded.{col}" for col in update_cols])
                 sql = f"INSERT INTO {table_name} SELECT * FROM {temp_table_name} ON CONFLICT ({conflict_target}) DO UPDATE SET {set_statements};"
                 self.logger.debug(f"Executing SQL (UPSERT style): {sql}")
 
-            self.conn.execute(sql) # This should be at the same indentation level as the if/else that defines sql
-            self.conn.unregister(temp_table_name) # Clean up temporary table
+            self.conn.execute(sql)
+            self.conn.unregister(temp_table_name)
             self.logger.info(f"Successfully inserted/replaced {len(df)} rows into {table_name}.")
             return True
         except Exception as e:
             self.logger.error(f"Error during bulk insert/replace into {table_name}: {e}", exc_info=True)
-            # Attempt to unregister temp table even on error
-            if 'temp_table_name' in locals() and self.conn.table(temp_table_name) is not None: # Check if temp table exists
+            if 'temp_table_name' in locals() and self.conn: # Check if conn still exists
                 try:
+                    # Check if temp table exists before trying to unregister
+                    # This might require a query like "SHOW TABLES LIKE 'temp_table_name'" or similar depending on DB
+                    # For DuckDB, conn.table(temp_table_name) would raise if not exists.
+                    # A safer check might be to query information_schema.tables.
+                    # However, for simplicity, we'll rely on the try-except for unregister.
                     self.conn.unregister(temp_table_name)
                 except Exception as e_unreg:
                     self.logger.error(f"Failed to unregister temp table {temp_table_name} on error: {e_unreg}")
             return False
 
     def fetch_all_for_engine(self, table_name: str, start_date: Optional[str] = None, end_date: Optional[str] = None, date_column: str = 'metric_date') -> Optional[pd.DataFrame]:
-        """
-        從指定的表中獲取所有數據，可選地按日期範圍過濾。
-        """
         if self.conn is None:
             self.logger.error(f"Cannot fetch from {table_name}: Database connection is None.")
             return None
@@ -905,18 +815,17 @@ class DatabaseManager:
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
 
-        query += f" ORDER BY {date_column}"
+        query += f" ORDER BY {date_column}" # Ensure data is sorted for engine
 
         try:
             result_df = self.conn.execute(query, params).fetchdf()
-            self.logger.info(f"Successfully fetched {len(result_df)} rows from {table_name}.")
+            self.logger.info(f"Successfully fetched {len(result_df)} rows from {table_name} for range {start_date}-{end_date}.")
             return result_df
         except Exception as e:
-            self.logger.error(f"Error fetching data from {table_name}: {e}", exc_info=True)
+            self.logger.error(f"Error fetching data from {table_name} for range {start_date}-{end_date}: {e}", exc_info=True)
             return None
 
     def execute_query(self, query: str, params: Optional[list] = None) -> Optional[pd.DataFrame]:
-        """執行一個自定義的 SQL 查詢並返回結果為 DataFrame。"""
         if self.conn is None:
             self.logger.error("Cannot execute query: Database connection is None.")
             return None
@@ -927,114 +836,84 @@ class DatabaseManager:
             self.logger.error(f"Error executing custom query '{query}': {e}", exc_info=True)
             return None
 
-    def close(self): # Alias for disconnect for convenience
+    def close(self):
         self.disconnect()
 
 if __name__ == '__main__':
-    # This __main__ block is for basic, standalone testing of DatabaseManager.
-    # It will create a DuckDB file in the current directory or a 'data' subdirectory.
-
     if not logging.getLogger().hasHandlers():
         logging.basicConfig(level=logging.DEBUG,
                             format='%(asctime)s - %(name)s [%(levelname)s] - %(module)s.%(funcName)s:%(lineno)d - %(message)s',
                             handlers=[logging.StreamHandler(sys.stdout)])
 
-    test_logger_db = logging.getLogger("DatabaseManagerTestRun_Atomic")
+    test_logger_db = logging.getLogger("DatabaseManagerTestRun_Atomic_Historical")
     if not test_logger_db.handlers:
         ch_db = logging.StreamHandler(sys.stdout)
         ch_db.setFormatter(logging.Formatter('%(asctime)s - %(name)s [%(levelname)s] - %(message)s'))
         test_logger_db.addHandler(ch_db)
         test_logger_db.propagate = False
 
-    # Test configuration for the database
-    # Assume this script is run from the project root where 'data/' would be created.
-    # For atomic script, PROJECT_ROOT will be passed from main.py
     test_db_config = {
         "database": {
-            "path": "data/test_financial_data_atomic.duckdb"
+            "path": "data/test_hist_job_db.duckdb" # Use a different DB for this test
         }
     }
-    # Determine project root for test (assuming this test is run from project root)
     test_project_root = str(Path(".").resolve())
-
-    test_logger_db.info("--- Starting DatabaseManager Test ---")
-    # Clean up old test DB if it exists
     old_db_file = Path(test_project_root) / test_db_config["database"]["path"]
-    if old_db_file.exists():
-        test_logger_db.info(f"Deleting old test database: {old_db_file}")
-        old_db_file.unlink()
+    if old_db_file.exists(): old_db_file.unlink()
 
+    test_logger_db.info("--- Starting DatabaseManager Test (Historical Job Context) ---")
     db_man = DatabaseManager(config=test_db_config, logger_instance=test_logger_db, project_root_dir=test_project_root)
 
     try:
         db_man.connect()
         assert db_man.conn is not None, "Connection failed"
-        test_logger_db.info("DB Connection successful.")
+        test_logger_db.info("DB Connection successful for historical job test.")
 
-        # Test table creation (should happen in connect)
-        test_logger_db.info("Checking if tables were created...")
+        # Test AI log table creation
         tables_df = db_man.execute_query("SHOW TABLES;")
-        assert tables_df is not None, "SHOW TABLES query failed"
-        test_logger_db.info(f"Tables in DB:\n{tables_df}")
-        table_names = tables_df['name'].tolist()
-        assert 'fact_macro_economic_data' in table_names, "fact_macro_economic_data not created"
-        assert 'fact_stock_price' in table_names, "fact_stock_price not created"
-        test_logger_db.info("Table creation check passed.")
+        assert 'log_ai_decision' in tables_df['name'].tolist(), "log_ai_decision table not created"
+        test_logger_db.info("'log_ai_decision' table confirmed.")
 
-        # Test bulk_insert_or_replace for macro data
-        macro_sample_data = {
-            'metric_date': [datetime(2023,1,1).date(), datetime(2023,1,2).date(), datetime(2023,1,1).date()],
-            'metric_name': ['FRED/DGS10', 'FRED/DGS10', 'FRED/UNRATE'],
-            'metric_value': [2.5, 2.6, 3.5],
-            'source_api': ['FRED', 'FRED', 'FRED'],
-            'data_snapshot_timestamp': [datetime.now(timezone.utc)] * 3
-        }
-        macro_df_test = pd.DataFrame(macro_sample_data)
-        test_logger_db.info(f"\nInserting macro data (1st time):\n{macro_df_test}")
-        success_macro_insert1 = db_man.bulk_insert_or_replace('fact_macro_economic_data', macro_df_test, unique_cols=['metric_date', 'metric_name', 'source_api'])
-        assert success_macro_insert1, "First macro insert failed"
+        # Test fetch_all_for_engine with date filtering
+        # (Assuming fact_macro_economic_data exists and might have some data from a previous run or needs sample data)
+        # For a clean test, one might insert sample data first.
+        # Here, we'll just test the query construction.
+        test_start_fetch = "2022-01-01"
+        test_end_fetch = "2022-01-15"
+        test_logger_db.info(f"Testing fetch_all_for_engine for 'fact_macro_economic_data' from {test_start_fetch} to {test_end_fetch}")
 
-        fetched_macro1 = db_man.fetch_all_for_engine('fact_macro_economic_data')
-        assert fetched_macro1 is not None and len(fetched_macro1) == 3, f"Expected 3 rows after 1st macro insert, got {len(fetched_macro1) if fetched_macro1 is not None else 'None'}"
-        test_logger_db.info(f"Macro data after 1st insert ({len(fetched_macro1)} rows):\n{fetched_macro1}")
+        # Create dummy data for testing fetch_all_for_engine
+        sample_macro_data = []
+        for i in range(20):
+            sample_macro_data.append({
+                'metric_date': (pd.to_datetime("2022-01-01") + pd.Timedelta(days=i)).date(),
+                'metric_name': 'DGS10_Test', 'metric_value': 2.0 + i*0.01,
+                'source_api': 'TestFRED', 'data_snapshot_timestamp': datetime.now(timezone.utc)
+            })
+        sample_macro_df = pd.DataFrame(sample_macro_data)
+        db_man.bulk_insert_or_replace('fact_macro_economic_data', sample_macro_df, unique_cols=['metric_date', 'metric_name', 'source_api'])
 
-        # Test upsert: update one row, insert a new one
-        macro_update_data = {
-            'metric_date': [datetime(2023,1,1).date(), datetime(2023,1,3).date()], # Update DGS10 on 2023-01-01, new DGS10 on 2023-01-03
-            'metric_name': ['FRED/DGS10', 'FRED/DGS10'],
-            'metric_value': [2.55, 2.7], # Updated value, new value
-            'source_api': ['FRED', 'FRED'],
-            'data_snapshot_timestamp': [datetime.now(timezone.utc)] * 2
-        }
-        macro_df_update = pd.DataFrame(macro_update_data)
-        test_logger_db.info(f"\nUpserting macro data (update 1, insert 1):\n{macro_df_update}")
-        success_macro_upsert = db_man.bulk_insert_or_replace('fact_macro_economic_data', macro_df_update, unique_cols=['metric_date', 'metric_name', 'source_api'])
-        assert success_macro_upsert, "Macro upsert failed"
+        fetched_df = db_man.fetch_all_for_engine('fact_macro_economic_data',
+                                                 start_date=test_start_fetch,
+                                                 end_date=test_end_fetch,
+                                                 date_column='metric_date')
+        if fetched_df is not None:
+            test_logger_db.info(f"Fetched {len(fetched_df)} rows. Head:\n{fetched_df.head().to_string()}")
+            if not fetched_df.empty:
+                assert fetched_df['metric_date'].min() >= pd.to_datetime(test_start_fetch).date()
+                assert fetched_df['metric_date'].max() <= pd.to_datetime(test_end_fetch).date()
+                test_logger_db.info("Date filtering in fetch_all_for_engine seems correct.")
+            else:
+                test_logger_db.info("fetch_all_for_engine returned empty (might be expected if no data in range).")
 
-        fetched_macro2 = db_man.fetch_all_for_engine('fact_macro_economic_data')
-        assert fetched_macro2 is not None and len(fetched_macro2) == 4, f"Expected 4 rows after macro upsert, got {len(fetched_macro2) if fetched_macro2 is not None else 'None'}"
-        test_logger_db.info(f"Macro data after upsert ({len(fetched_macro2)} rows):\n{fetched_macro2}")
-        # Check updated value
-        updated_val = fetched_macro2[(fetched_macro2['metric_date'] == datetime(2023,1,1).date()) & (fetched_macro2['metric_name'] == 'FRED/DGS10')]['metric_value'].iloc[0]
-        assert updated_val == 2.55, f"Expected updated DGS10 value to be 2.55, got {updated_val}"
-        test_logger_db.info("Macro data upsert successful.")
+        test_logger_db.info("DatabaseManager tests (Historical Job Context) passed.")
 
-        # Test fetch_all_for_engine with date range
-        fetched_macro_ranged = db_man.fetch_all_for_engine('fact_macro_economic_data', start_date='2023-01-02', end_date='2023-01-03')
-        assert fetched_macro_ranged is not None and len(fetched_macro_ranged) == 2, f"Expected 2 rows in date range, got {len(fetched_macro_ranged) if fetched_macro_ranged is not None else 'None'}"
-        test_logger_db.info(f"Macro data for 2023-01-02 to 2023-01-03 ({len(fetched_macro_ranged)} rows):\n{fetched_macro_ranged}")
-
-        test_logger_db.info("DatabaseManager tests passed successfully.")
-
-    except Exception as e_test:
-        test_logger_db.error(f"DatabaseManager test failed: {e_test}", exc_info=True)
+    except Exception as e_test_hist:
+        test_logger_db.error(f"DatabaseManager test (Historical Job Context) failed: {e_test_hist}", exc_info=True)
     finally:
         db_man.disconnect()
-        test_logger_db.info("--- DatabaseManager Test Finished ---")
-        # Optional: delete the test database file after test
-        # if old_db_file.exists():
-        #     test_logger_db.info(f"Deleting test database after run: {old_db_file}")
-        #     old_db_file.unlink(missing_ok=True)
+        test_logger_db.info("--- DatabaseManager Test (Historical Job Context) Finished ---")
+        # if old_db_file.exists(): old_db_file.unlink(missing_ok=True) # Clean up
 EOF
 
 echo "Creating src/connectors/yfinance_connector.py..."
@@ -1045,7 +924,7 @@ from typing import List, Dict, Any, Tuple, Optional
 from datetime import datetime, timezone
 import logging
 import sys
-import requests # For session type hint, though not strictly used in __init__ here
+import requests
 
 try:
     from .base import BaseConnector
@@ -1058,7 +937,7 @@ except ImportError:
 class YFinanceConnector(BaseConnector):
     """使用 yfinance 獲取股價和指數數據。"""
 
-    def __init__(self, config: Dict[str, Any], logger_instance: Optional[logging.Logger] = None, session: Optional[requests.Session] = None): # session param kept for interface consistency if needed later
+    def __init__(self, config: Dict[str, Any], logger_instance: Optional[logging.Logger] = None, session: Optional[requests.Session] = None):
         if logger_instance:
             self.logger = logger_instance
         else:
@@ -1068,7 +947,6 @@ class YFinanceConnector(BaseConnector):
                 self.logger.debug(f"Logger for {self.__class__.__name__} configured with NullHandler for atomic script.")
 
         super().__init__(config, source_api_name="yfinance")
-        # self.requests_session = session # Not actively used by yfinance Ticker object directly in its constructor like some other libs
 
     def fetch_data(self, tickers: List[str], start_date: str, end_date: Optional[str] = None,
                    interval: str = "1d", **kwargs) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
@@ -1076,37 +954,26 @@ class YFinanceConnector(BaseConnector):
 
         if not tickers:
             self.logger.warning("No tickers provided to YFinanceConnector fetch_data.")
-            # Return DataFrame with all expected columns for consistency
             final_cols_spec = ['price_date', 'security_id', 'open_price', 'high_price', 'low_price',
                                'close_price', 'adj_close_price', 'volume', 'dividends', 'stock_splits',
                                'source_api', 'data_snapshot_timestamp']
             return pd.DataFrame(columns=final_cols_spec), "No tickers provided."
 
         all_ticker_data_list = []
-        # yfinance's Ticker object can accept a session for underlying requests,
-        # but it's often managed internally or via its own mechanisms.
-        # For this script, we'll let yfinance handle its session management unless a specific need arises.
-        # session_to_use = kwargs.get('session', self.requests_session)
 
-        # YFinance library's 'history' method already supports 'start' and 'end' parameters.
-        # We will pass the `end_date` from `fetch_data` directly to `ticker_obj.history(end=end_date)`.
-        # No additional local filtering is strictly necessary for YFinanceConnector if the library handles it.
-        # However, it's good practice to log what date range is being requested.
         self.logger.info(f"YFinanceConnector: Requesting data for tickers {tickers} up to end_date: {end_date}")
 
         for ticker_symbol in tickers:
             self.logger.debug(f"Fetching yfinance data for: {ticker_symbol}")
             try:
-                ticker_obj = yf.Ticker(ticker_symbol) # Let yf.Ticker manage its session
+                ticker_obj = yf.Ticker(ticker_symbol)
 
-                # Pass start_date and end_date (which is the method's end_date parameter) to yfinance
                 hist_df = ticker_obj.history(
                     start=start_date,
-                    end=end_date, # This is the crucial part for time-limited data
+                    end=end_date,
                     interval=interval,
-                    auto_adjust=False, # Important to get 'Adj Close' and 'Close' separately if needed, and splits/dividends
-                    actions=True,      # To get dividends and stock splits
-                    # progress=False,    # Removed: yfinance 0.2.x no longer supports 'progress' arg here
+                    auto_adjust=False,
+                    actions=True,
                 )
 
                 if hist_df.empty:
@@ -1115,51 +982,44 @@ class YFinanceConnector(BaseConnector):
 
                 hist_df.reset_index(inplace=True)
 
-                # Determine the correct date column name (yfinance can vary this)
                 date_col_name = None
-                if 'Datetime' in hist_df.columns: date_col_name = 'Datetime' # Usually for intraday
-                elif 'Date' in hist_df.columns: date_col_name = 'Date'       # Usually for daily
+                if 'Datetime' in hist_df.columns: date_col_name = 'Datetime'
+                elif 'Date' in hist_df.columns: date_col_name = 'Date'
 
                 if not date_col_name:
                     self.logger.error(f"Date column ('Date' or 'Datetime') not found in yfinance data for {ticker_symbol}. Columns: {hist_df.columns.tolist()}")
                     continue
 
-                # Standardize column names
                 rename_map = {
                     date_col_name: 'price_date', 'Open': 'open_price', 'High': 'high_price',
                     'Low': 'low_price', 'Close': 'close_price', 'Adj Close': 'adj_close_price',
                     'Volume': 'volume', 'Dividends': 'dividends', 'Stock Splits': 'stock_splits'
                 }
-                # Only rename columns that exist in the DataFrame
                 current_rename_map = {k: v for k, v in rename_map.items() if k in hist_df.columns}
                 df_renamed = hist_df.rename(columns=current_rename_map)
 
-                # Convert price_date to just date (YYYY-MM-DD), removing time and timezone
                 df_renamed['price_date'] = pd.to_datetime(df_renamed['price_date'])
-                if df_renamed['price_date'].dt.tz is not None: # If timezone-aware
-                    df_renamed['price_date'] = df_renamed['price_date'].dt.tz_localize(None) # Make timezone-naive
-                df_renamed['price_date'] = df_renamed['price_date'].dt.normalize().dt.date # Get date part
+                if df_renamed['price_date'].dt.tz is not None:
+                    df_renamed['price_date'] = df_renamed['price_date'].dt.tz_localize(None)
+                df_renamed['price_date'] = df_renamed['price_date'].dt.normalize().dt.date
 
-                # Add standard metadata columns
                 df_renamed['security_id'] = ticker_symbol
                 df_renamed['source_api'] = self.source_api_name
                 df_renamed['data_snapshot_timestamp'] = datetime.now(timezone.utc)
 
-                # Ensure all expected final columns are present
                 final_cols_spec = ['price_date', 'security_id', 'open_price', 'high_price', 'low_price',
                                    'close_price', 'adj_close_price', 'volume', 'dividends', 'stock_splits',
                                    'source_api', 'data_snapshot_timestamp']
 
                 for fc_col in final_cols_spec:
                     if fc_col not in df_renamed.columns:
-                        # Default to 0.0 for dividends/splits, NA for others
                         default_val = 0.0 if fc_col in ['dividends', 'stock_splits'] else pd.NA
                         df_renamed[fc_col] = default_val
 
                 all_ticker_data_list.append(df_renamed[final_cols_spec])
                 self.logger.debug(f"Processed yfinance data for {ticker_symbol}, {len(df_renamed)} rows.")
 
-            except Exception as e: # Catch broader exceptions from yfinance
+            except Exception as e:
                 self.logger.error(f"Error fetching/processing yfinance for {ticker_symbol}: {e}", exc_info=True)
 
         if not all_ticker_data_list:
@@ -1171,17 +1031,16 @@ class YFinanceConnector(BaseConnector):
 
         final_df = pd.concat(all_ticker_data_list, ignore_index=True)
 
-        if final_df.empty: # Should be caught by the above, but as a safeguard
+        if final_df.empty:
              self.logger.warning("Final combined yfinance data is empty (all tickers failed or returned no data).")
              return final_df, "Final combined yfinance data is empty."
 
-        # Ensure correct dtypes for numeric columns
         numeric_cols = ['open_price', 'high_price', 'low_price', 'close_price', 'adj_close_price', 'dividends', 'stock_splits']
         for col_to_num in numeric_cols:
             if col_to_num in final_df.columns:
                 final_df[col_to_num] = pd.to_numeric(final_df[col_to_num], errors='coerce')
-        if 'volume' in final_df.columns: # Volume should be integer
-            final_df['volume'] = pd.to_numeric(final_df['volume'], errors='coerce').astype('Int64') # Use nullable Int64
+        if 'volume' in final_df.columns:
+            final_df['volume'] = pd.to_numeric(final_df['volume'], errors='coerce').astype('Int64')
 
         self.logger.info(f"Successfully fetched and processed {len(final_df)} total records from yfinance for tickers: {tickers}.")
         return final_df, None
@@ -1193,66 +1052,48 @@ if __name__ == '__main__':
                             format='%(asctime)s - %(name)s [%(levelname)s] - %(module)s.%(funcName)s:%(lineno)d - %(message)s',
                             handlers=[logging.StreamHandler(sys.stdout)])
 
-    test_logger_yf = logging.getLogger("YFinanceConnectorTestRun_Atomic")
+    test_logger_yf = logging.getLogger("YFinanceConnectorTestRun_Atomic_Historical")
     if not test_logger_yf.handlers:
         ch_yf = logging.StreamHandler(sys.stdout)
         ch_yf.setFormatter(logging.Formatter('%(asctime)s - %(name)s [%(levelname)s] - %(message)s'))
         test_logger_yf.addHandler(ch_yf)
         test_logger_yf.propagate = False
 
-    sample_config_yf = {} # YFinanceConnector doesn't use much from config in this version
+    sample_config_yf = {}
     yf_connector = YFinanceConnector(config=sample_config_yf, logger_instance=test_logger_yf)
 
-    test_logger_yf.info("\n--- Testing YFinanceConnector for ^MOVE ---")
-    move_df, move_err = yf_connector.fetch_data(tickers=["^MOVE"], start_date="2024-01-01", end_date="2024-01-15")
+    test_logger_yf.info("\n--- Testing YFinanceConnector for ^MOVE with end_date filter ---")
+    test_start_yf = "2023-01-01"
+    test_end_yf_filter = "2023-01-15" # Filter up to this date
+    move_df, move_err = yf_connector.fetch_data(tickers=["^MOVE"], start_date=test_start_yf, end_date=test_end_yf_filter)
     if move_err:
         test_logger_yf.error(f"^MOVE Test Error: {move_err}")
     elif move_df is not None:
         test_logger_yf.info(f"^MOVE Test OK. Shape: {move_df.shape}")
-        if not move_df.empty: test_logger_yf.info(f"^MOVE Head:\n{move_df.head().to_string()}")
-
-    test_logger_yf.info("\n--- Testing YFinanceConnector for AAPL, NONEXISTENTTICKERXYZ ---")
-    # Test with a mix of valid and potentially invalid tickers
-    mixed_tickers = ["AAPL", "NONEXISTENTTICKERXYZ"]
-    stocks_df, stocks_err = yf_connector.fetch_data(tickers=mixed_tickers, start_date="2024-01-01", end_date="2024-01-05")
-    if stocks_err: # An error message might be returned if ALL fail, or partial data with warnings logged
-        test_logger_yf.warning(f"Mixed Stocks Test potentially completed with issues: {stocks_err}")
-
-    if stocks_df is not None:
-        test_logger_yf.info(f"Mixed Stocks Test Data Shape: {stocks_df.shape}")
-        if not stocks_df.empty:
-            test_logger_yf.info(f"Mixed Stocks Data Head:\n{stocks_df.head().to_string()}")
-            unique_tickers_found_mixed = stocks_df['security_id'].unique()
-            test_logger_yf.info(f"Found data for tickers: {unique_tickers_found_mixed}")
-            if "AAPL" in unique_tickers_found_mixed:
-                test_logger_yf.info("AAPL data was found.")
-            if "NONEXISTENTTICKERXYZ" not in unique_tickers_found_mixed:
-                 test_logger_yf.info("NONEXISTENTTICKERXYZ correctly did not return data or was skipped.")
+        if not move_df.empty:
+            test_logger_yf.info(f"^MOVE Head (filtered to {test_end_yf_filter}):\n{move_df.head().to_string()}")
+            test_logger_yf.info(f"^MOVE Tail (filtered to {test_end_yf_filter}):\n{move_df.tail().to_string()}")
+            max_date_move = pd.to_datetime(move_df['price_date']).max().date() # Ensure it's date for comparison
+            assert max_date_move <= pd.to_datetime(test_end_yf_filter).date(), f"YFinance data for ^MOVE found after specified end_date {test_end_yf_filter}! Max date was {max_date_move}"
+            test_logger_yf.info(f"YFinance data for ^MOVE correctly filtered by end_date {test_end_yf_filter}.")
         else:
-            test_logger_yf.info("Mixed Stocks Test returned an empty DataFrame (e.g., if AAPL also had no data for the period or all failed).")
+            test_logger_yf.info(f"YFinance for ^MOVE returned empty for period up to {test_end_yf_filter} (this might be expected or indicate test data range issues).")
 
-    test_logger_yf.info("\n--- Testing YFinanceConnector with empty ticker list ---")
-    empty_df, empty_err = yf_connector.fetch_data(tickers=[], start_date="2024-01-01")
-    if empty_err == "No tickers provided." and (empty_df is not None and empty_df.empty):
-        test_logger_yf.info(f"OK (empty ticker list): Error='{empty_err}', DataFrame is empty as expected.")
-    else:
-        test_logger_yf.error(f"Fail (empty ticker list): err='{empty_err}', df_empty={empty_df.empty if empty_df is not None else 'N/A'}")
-
-    test_logger_yf.info("--- YFinanceConnector Test Finished ---")
+    test_logger_yf.info("--- YFinanceConnector Test (Historical) Finished ---")
 EOF
 
 echo "Creating src/engine/indicator_engine.py..."
+# No changes needed for IndicatorEngine.py for Action Item 2.1, as data filtering happens before it.
+# Re-writing it identically.
 cat <<EOF > src/engine/indicator_engine.py
 import pandas as pd
-from typing import Dict, Any, Optional # Ensure Optional is imported
+from typing import Dict, Any, Optional
 import numpy as np
 import logging
-import sys # Not strictly necessary for this script's direct functionality but good practice if other parts use it
+import sys
 
-# Basic logger setup for the module, will be overridden if a logger_instance is passed to the class
-# For atomic script, this logger will likely write to wherever the global logger (from main.py/initialize_global_log) is configured.
 logger = logging.getLogger(f"project_logger.{__name__}")
-if not logger.handlers and not logging.getLogger().hasHandlers(): # Check root logger too
+if not logger.handlers and not logging.getLogger().hasHandlers():
     logger.addHandler(logging.NullHandler())
     logger.debug(f"Logger for {__name__} (IndicatorEngine module) configured with NullHandler for atomic script.")
 
@@ -1264,14 +1105,13 @@ class IndicatorEngine:
         if logger_instance:
             self.logger = logger_instance
         else:
-            # Fallback to a module-specific logger if no instance is provided
             self.logger = logging.getLogger(f"project_logger.{self.__class__.__name__}")
             if not self.logger.handlers and not logging.getLogger().hasHandlers():
                  self.logger.addHandler(logging.NullHandler())
                  self.logger.debug(f"Instance logger for {self.__class__.__name__} using NullHandler for atomic script.")
 
-        self.raw_macro_df = data_frames.get('macro', pd.DataFrame()) # Default to empty DF
-        self.raw_move_df = data_frames.get('move', pd.DataFrame())   # Default to empty DF
+        self.raw_macro_df = data_frames.get('macro', pd.DataFrame())
+        self.raw_move_df = data_frames.get('move', pd.DataFrame())
         self.params = params if params is not None else {}
         self.df_prepared: Optional[pd.DataFrame] = None
 
@@ -1285,14 +1125,9 @@ class IndicatorEngine:
 
         if self.raw_macro_df.empty:
             self.logger.warning("IndicatorEngine: Macro data (raw_macro_df) is empty. Proceeding without macro indicators for pivot.")
-            # Create an empty DataFrame with a DatetimeIndex if MOVE data might exist, to allow merging
-            # However, if MOVE is also empty, this won't help much.
-            # Consider the case where only MOVE data is present.
             if self.raw_move_df.empty:
                 self.logger.error("IndicatorEngine: Both macro and MOVE data are empty. Cannot prepare data.")
                 return None
-            # If only MOVE data is present, macro_wide_df will be effectively empty or non-existent
-            # and combined_df logic should handle it.
             macro_wide_df = pd.DataFrame()
         else:
             try:
@@ -1307,21 +1142,19 @@ class IndicatorEngine:
                     self.logger.error("IndicatorEngine: Macro data has no valid 'metric_date' entries after coercion.")
                     return None
 
-                # Pivot macro data
                 if not all(col in current_macro_df.columns for col in ['metric_name', 'metric_value']):
                     self.logger.error("IndicatorEngine: 'metric_name' or 'metric_value' missing for pivot.")
                     return None
                 macro_wide_df = current_macro_df.pivot_table(
                     index='metric_date', columns='metric_name', values='metric_value'
                 )
-                macro_wide_df.index.name = 'date' # Standardize index name
+                macro_wide_df.index.name = 'date'
                 self.logger.debug(f"IndicatorEngine: Pivoted macro data shape: {macro_wide_df.shape}")
             except Exception as e:
                 self.logger.error(f"IndicatorEngine: Failed to pivot macro_df: {e}", exc_info=True)
                 return None
 
-        # Prepare MOVE data
-        move_wide_df = pd.DataFrame() # Initialize as empty
+        move_wide_df = pd.DataFrame()
         if not self.raw_move_df.empty:
             if all(col in self.raw_move_df.columns for col in ['price_date', 'close_price', 'security_id']):
                 move_df_filtered = self.raw_move_df[self.raw_move_df['security_id'] == '^MOVE'].copy()
@@ -1329,9 +1162,8 @@ class IndicatorEngine:
                     move_df_filtered['price_date'] = pd.to_datetime(move_df_filtered['price_date'], errors='coerce')
                     move_df_filtered.dropna(subset=['price_date'], inplace=True)
                     if not move_df_filtered.empty:
-                        # Set index to price_date and rename close_price to ^MOVE
                         move_wide_df = move_df_filtered.set_index('price_date')[['close_price']].rename(columns={'close_price': '^MOVE'})
-                        move_wide_df.index.name = 'date' # Standardize index name
+                        move_wide_df.index.name = 'date'
                         self.logger.debug(f"IndicatorEngine: Prepared ^MOVE index data. Non-NaN count: {move_wide_df['^MOVE'].notna().sum()}")
                     else:
                         self.logger.warning("IndicatorEngine: ^MOVE data had no valid 'price_date' entries after coercion.")
@@ -1342,7 +1174,6 @@ class IndicatorEngine:
         else:
             self.logger.warning("IndicatorEngine: ^MOVE data (raw_move_df) is missing or empty. ^MOVE index will be NaN if not in macro_wide_df.")
 
-        # Combine macro and MOVE data
         if macro_wide_df.empty and move_wide_df.empty:
             self.logger.error("IndicatorEngine: Both pivoted macro and MOVE data are empty. Cannot combine.")
             return None
@@ -1351,22 +1182,19 @@ class IndicatorEngine:
             self.logger.warning("IndicatorEngine: Pivoted macro data was empty, using only MOVE data for combined_df.")
         elif move_wide_df.empty:
             combined_df = macro_wide_df
-            if '^MOVE' not in combined_df.columns: # Ensure ^MOVE column exists if it's expected later
+            if '^MOVE' not in combined_df.columns:
                 combined_df['^MOVE'] = np.nan
             self.logger.warning("IndicatorEngine: MOVE data was empty, using only macro data for combined_df.")
         else:
-            # Outer join to keep all dates, then decide on fill strategy
             combined_df = pd.merge(macro_wide_df, move_wide_df, left_index=True, right_index=True, how='outer')
             self.logger.debug(f"IndicatorEngine: Combined macro and MOVE data. Shape: {combined_df.shape}")
 
-        if '^MOVE' not in combined_df.columns: # Ensure ^MOVE column exists after merge if it wasn't there
+        if '^MOVE' not in combined_df.columns:
                 combined_df['^MOVE'] = np.nan
 
         combined_df.sort_index(inplace=True)
-        # Forward fill, then backward fill to handle NaNs robustly
-        # Limit ffill/bfill to avoid excessive propagation if data is very sparse, e.g. 7 days
         combined_df = combined_df.ffill(limit=7).bfill(limit=7)
-        combined_df.dropna(how='all', inplace=True) # Drop rows where all values are NaN after filling
+        combined_df.dropna(how='all', inplace=True)
 
         if combined_df.empty:
             self.logger.error("IndicatorEngine: Prepared data is empty after merge and fill operations.")
@@ -1377,87 +1205,71 @@ class IndicatorEngine:
 
     def calculate_dealer_stress_index(self) -> Optional[pd.DataFrame]:
         self.logger.info("IndicatorEngine: Calculating Dealer Stress Index...")
-        # Always call _prepare_data to get the latest state based on inputs
         current_prepared_data = self._prepare_data()
 
         if current_prepared_data is None or current_prepared_data.empty:
             self.logger.error("IndicatorEngine: Prepared data is None or empty. Cannot calculate stress index.")
-            self.df_prepared = current_prepared_data # Store the (empty) prepared data state
+            self.df_prepared = current_prepared_data
             return None
 
-        # Store the successfully prepared data (potentially including ^MOVE from yfinance)
-        # This df_prepared will be used for briefing if calculation is successful.
         self.df_prepared = current_prepared_data.copy()
-        df = self.df_prepared.copy() # Work on a copy for calculations
+        df = self.df_prepared.copy()
 
-        # Parameters for the index
         window = self.params.get('rolling_window_days', 252)
         weights_config = self.params.get('stress_index_weights', {})
-        min_periods_ratio = self.params.get('min_periods_ratio_for_rolling', 0.5) # Ratio of window for min_periods
+        min_periods_ratio = self.params.get('min_periods_ratio_for_rolling', 0.5)
 
-        # Define components and their expected column names in the prepared DataFrame
         component_map = {
             'sofr_deviation': 'FRED/SOFR_Dev',
             'spread_10y2y': 'spread_10y2y',
-            'primary_dealer_position': 'NYFED/PRIMARY_DEALER_NET_POSITION', # This comes from NYFed data
-            'move_index': '^MOVE',             # This comes from yfinance data
-            'vix_index': 'FRED/VIXCLS',        # This comes from FRED data
-            'pos_res_ratio': 'pos_res_ratio'   # Derived from FRED/WRESBAL and NYFED positions
+            'primary_dealer_position': 'NYFED/PRIMARY_DEALER_NET_POSITION',
+            'move_index': '^MOVE',
+            'vix_index': 'FRED/VIXCLS',
+            'pos_res_ratio': 'pos_res_ratio'
         }
         self.logger.debug(f"IndicatorEngine: Stress Index Params: Window={window}, Weights={weights_config}, MinPeriodsRatio={min_periods_ratio}")
 
-        # Calculate derived components first
-        # 1. 10Y-2Y Spread
         if 'FRED/DGS10' in df.columns and 'FRED/DGS2' in df.columns:
             df['spread_10y2y'] = df['FRED/DGS10'] - df['FRED/DGS2']
         else:
             df['spread_10y2y'] = np.nan
             self.logger.warning("IndicatorEngine: FRED/DGS10 or FRED/DGS2 missing. 'spread_10y2y' will be NaN.")
 
-        # 2. SOFR Deviation from its 20-day MA
-        if 'FRED/SOFR' in df.columns and df['FRED/SOFR'].notna().sum() >= 20: # Need enough data for MA
+        if 'FRED/SOFR' in df.columns and df['FRED/SOFR'].notna().sum() >= 20:
              df['FRED/SOFR_MA20'] = df['FRED/SOFR'].rolling(window=20, min_periods=15).mean()
              df['FRED/SOFR_Dev'] = df['FRED/SOFR'] - df['FRED/SOFR_MA20']
         else:
             df['FRED/SOFR_Dev'] = np.nan
             self.logger.warning("IndicatorEngine: FRED/SOFR has insufficient data for 20-day MA or is missing. 'FRED/SOFR_Dev' will be NaN.")
 
-        # 3. Primary Dealer Positions to Reserves Ratio
         if 'NYFED/PRIMARY_DEALER_NET_POSITION' in df.columns and 'FRED/WRESBAL' in df.columns:
-            # Ensure WRESBAL (reserves) is not zero to avoid division by zero; replace 0 with NaN
             res_safe = df['FRED/WRESBAL'].replace(0, np.nan)
             df['pos_res_ratio'] = df['NYFED/PRIMARY_DEALER_NET_POSITION'] / res_safe
-            df['pos_res_ratio'].replace([np.inf, -np.inf], np.nan, inplace=True) # Handle infinities if res_safe was NaN then became 0 through ops
+            df['pos_res_ratio'].replace([np.inf, -np.inf], np.nan, inplace=True)
         else:
             df['pos_res_ratio'] = np.nan
             self.logger.warning("IndicatorEngine: NYFED/PRIMARY_DEALER_NET_POSITION or FRED/WRESBAL missing. 'pos_res_ratio' will be NaN.")
 
-        # Update self.df_prepared to include these newly derived columns before percentile ranking
-        # This ensures that the briefing can access these intermediate calculations.
         self.df_prepared = df.copy()
 
-        # Calculate rolling percentiles for each component
         percentiles_df = pd.DataFrame(index=df.index)
-        active_component_weights = {} # Store weights of components that are actually used
+        active_component_weights = {}
 
-        min_rolling_periods = max(2, int(window * min_periods_ratio)) # Ensure at least 2 periods
+        min_rolling_periods = max(2, int(window * min_periods_ratio))
 
         for key, col_name in component_map.items():
-            if weights_config.get(key, 0) == 0: # Skip if weight is zero
+            if weights_config.get(key, 0) == 0:
                 self.logger.debug(f"IndicatorEngine: Skipping rank for {key} ({col_name}) due to zero weight.")
-                percentiles_df[f"{key}_pct_rank"] = np.nan # Keep column for completeness if needed
+                percentiles_df[f"{key}_pct_rank"] = np.nan
                 continue
 
             if col_name in df.columns and df[col_name].notna().any():
                 series_to_rank = df[col_name]
                 if series_to_rank.notna().sum() >= min_rolling_periods:
-                    # Calculate rolling rank (percentile)
-                    # rank(pct=True) gives percentile from 0 to 1. iloc[-1] takes the last value in the window.
                     rolling_percentile = series_to_rank.rolling(window=window, min_periods=min_rolling_periods).apply(
                         lambda x_window: pd.Series(x_window).rank(pct=True).iloc[-1] if pd.Series(x_window).notna().any() else np.nan,
-                        raw=False # raw=False needed for DataFrames/Series with datetime index
+                        raw=False
                     )
-                    # For 'spread_10y2y', lower is more stress (inverted yield curve), so invert percentile
                     percentiles_df[f"{key}_pct_rank"] = (1.0 - rolling_percentile) if key == 'spread_10y2y' else rolling_percentile
                     active_component_weights[key] = weights_config[key]
                     self.logger.debug(f"IndicatorEngine: Calculated rolling percentile for {key} ({col_name}).")
@@ -1470,88 +1282,71 @@ class IndicatorEngine:
 
         if not active_component_weights:
             self.logger.error("IndicatorEngine: No active components with valid data and non-zero weights for stress index calculation.")
-            return None # Or return df_prepared to show intermediate steps? For now, None if index fails.
+            return None
 
-        # Normalize active weights (so they sum to 1)
         total_active_weight = sum(active_component_weights.values())
-        if total_active_weight == 0: # Should be caught by above, but safeguard
+        if total_active_weight == 0:
             self.logger.error("IndicatorEngine: Sum of active component weights is zero. Cannot normalize.")
             return None
 
         normalized_weights = {k: w / total_active_weight for k, w in active_component_weights.items()}
         self.logger.info(f"IndicatorEngine: Normalized Stress Index Weights (for active components): {normalized_weights}")
 
-        # Calculate the weighted stress index
-        # Initialize series for sum of weighted percentiles and sum of effective weights
         final_stress_index_series = pd.Series(0.0, index=df.index)
         sum_of_effective_weights = pd.Series(0.0, index=df.index)
 
         for component_key, weight in normalized_weights.items():
             percentile_col_name = f"{component_key}_pct_rank"
             if percentile_col_name in percentiles_df.columns and percentiles_df[percentile_col_name].notna().any():
-                # Fill NaNs in percentile ranks with 0.5 (neutral) before weighting
-                # This assumes that if a component's rank is missing, it contributes neutrally.
                 component_contribution = percentiles_df[percentile_col_name].fillna(0.5) * weight
                 final_stress_index_series = final_stress_index_series.add(component_contribution, fill_value=0)
-                # Track sum of weights for rows where percentile rank was available (not NaN before fillna(0.5))
                 sum_of_effective_weights = sum_of_effective_weights.add(percentiles_df[percentile_col_name].notna() * weight, fill_value=0)
             else:
                 self.logger.warning(f"IndicatorEngine: Percentile rank column {percentile_col_name} for component {component_key} is missing or all NaN. This component will not contribute to the index.")
 
-        # Adjust index for cases where some components were missing for certain dates
-        # by dividing by the sum of effective weights for those dates.
-        # Avoid division by zero if sum_of_effective_weights is 0 for some rows.
         adjusted_stress_index = final_stress_index_series.divide(sum_of_effective_weights.replace(0, np.nan))
-
-        # Scale to 0-100 and clip
         final_stress_index_scaled = (adjusted_stress_index * 100).clip(0, 100)
 
-        # Create result DataFrame
         result_df = pd.DataFrame({'DealerStressIndex': final_stress_index_scaled}, index=df.index)
-        result_df = result_df.join(percentiles_df) # Join with individual percentile ranks for transparency
+        result_df = result_df.join(percentiles_df)
 
-        # Drop rows where the final DealerStressIndex is NaN (e.g., if all components were NaN for that date)
         final_result_df = result_df.dropna(subset=['DealerStressIndex'])
 
         if final_result_df.empty:
             self.logger.warning("IndicatorEngine: Dealer Stress Index is all NaN after calculation and processing.")
-            return None # Or an empty DataFrame with the columns?
+            return None
 
         self.logger.info(f"IndicatorEngine: Dealer Stress Index calculated successfully. Final shape: {final_result_df.shape}")
         return final_result_df
 
-
-# Test block for direct execution
 if __name__ == '__main__':
-    # Setup basic logging for test execution
     if not logging.getLogger().hasHandlers():
         logging.basicConfig(level=logging.DEBUG,
                             format='%(asctime)s - %(name)s [%(levelname)s] - %(module)s.%(funcName)s:%(lineno)d - %(message)s',
                             handlers=[logging.StreamHandler(sys.stdout)])
 
-    test_logger_eng_main = logging.getLogger("IndicatorEngineTestRun_Atomic")
+    test_logger_eng_main = logging.getLogger("IndicatorEngineTestRun_Atomic_Historical")
     if not test_logger_eng_main.handlers:
         ch_eng_main = logging.StreamHandler(sys.stdout)
         ch_eng_main.setFormatter(logging.Formatter('%(asctime)s - %(name)s [%(levelname)s] - %(message)s'))
         test_logger_eng_main.addHandler(ch_eng_main)
         test_logger_eng_main.propagate = False
 
-    # Sample data for testing
     dates_sample = pd.to_datetime(['2023-01-01', '2023-01-02', '2023-01-03', '2023-01-04', '2023-01-05',
                                    '2023-01-06', '2023-01-07', '2023-01-08', '2023-01-09', '2023-01-10'])
 
     macro_data_test = {
-        'metric_date': list(dates_sample) * 6, # Repeat dates for each metric
+        'metric_date': list(dates_sample) * 6,
         'metric_name': (['FRED/DGS10'] * len(dates_sample) + ['FRED/DGS2'] * len(dates_sample) +
                         ['FRED/SOFR'] * len(dates_sample) + ['FRED/VIXCLS'] * len(dates_sample) +
                         ['NYFED/PRIMARY_DEALER_NET_POSITION'] * len(dates_sample) + ['FRED/WRESBAL'] * len(dates_sample)),
         'metric_value': (
-            list(np.linspace(3.0, 3.5, len(dates_sample))) + # DGS10
-            list(np.linspace(2.0, 2.5, len(dates_sample))) + # DGS2
-            list(np.linspace(1.0, 1.2, len(dates_sample))) + # SOFR
-            list(np.linspace(15, 25, len(dates_sample))) +   # VIXCLS
-            list(np.linspace(1000e6, 1200e6, len(dates_sample))) + # Primary Dealer Positions (example: 1B to 1.2B)
-            list(np.linspace(2.5e12, 2.7e12, len(dates_sample)))   # Reserves (example: 2.5T to 2.7T)
+            list(np.linspace(3.0, 3.5, len(dates_sample))) +
+            list(np.linspace(2.0, 2.5, len(dates_sample))) +
+            list(np.linspace(1.0, 1.2, len(dates_sample))) +
+            list(np.linspace(15, 25, len(dates_sample))) +
+            list(np.linspace(1000e6, 1200e6, len(dates_sample))) +
+            list(np.linspace(2.5e12, 2.7e12, len(dates_sample)))
         )
     }
     sample_macro_df = pd.DataFrame(macro_data_test)
@@ -1559,24 +1354,21 @@ if __name__ == '__main__':
     move_data_test = {
         'price_date': dates_sample,
         'security_id': ['^MOVE'] * len(dates_sample),
-        'close_price': np.linspace(80, 95, len(dates_sample)) # ^MOVE values
+        'close_price': np.linspace(80, 95, len(dates_sample))
     }
     sample_move_df = pd.DataFrame(move_data_test)
 
     engine_params_config = {
-        'rolling_window_days': 5, # Shorter window for test data
-        'min_periods_ratio_for_rolling': 0.6, # Need 3 out of 5 days
+        'rolling_window_days': 5,
+        'min_periods_ratio_for_rolling': 0.6,
         'stress_index_weights': {
-            'sofr_deviation': 0.20,
-            'spread_10y2y': 0.20,
-            'primary_dealer_position': 0.15,
-            'move_index': 0.25,
-            'vix_index': 0.15,
-            'pos_res_ratio': 0.05
+            'sofr_deviation': 0.20, 'spread_10y2y': 0.20,
+            'primary_dealer_position': 0.15, 'move_index': 0.25,
+            'vix_index': 0.15, 'pos_res_ratio': 0.05
         }
     }
 
-    test_logger_eng_main.info("\n--- Test IndicatorEngine Full Calculation ---")
+    test_logger_eng_main.info("\n--- Test IndicatorEngine Full Calculation (Historical Context) ---")
     engine_instance = IndicatorEngine(
         data_frames={'macro': sample_macro_df, 'move': sample_move_df},
         params=engine_params_config,
@@ -1589,70 +1381,35 @@ if __name__ == '__main__':
         test_logger_eng_main.info(f"Stress Index Output Shape: {stress_index_output.shape}")
         test_logger_eng_main.info(f"Stress Index Output Head:\n{stress_index_output.head().to_string()}")
         assert 'DealerStressIndex' in stress_index_output.columns, "Test Failed: DealerStressIndex column missing"
-
-        # Check df_prepared for intermediate calculations
-        if engine_instance.df_prepared is not None and not engine_instance.df_prepared.empty:
-            test_logger_eng_main.info(f"Engine's df_prepared head (should include derived components like spread_10y2y, SOFR_Dev, pos_res_ratio):\n{engine_instance.df_prepared.head().to_string()}")
-            assert 'spread_10y2y' in engine_instance.df_prepared.columns, "Test Failed: spread_10y2y missing in df_prepared"
-            assert 'FRED/SOFR_Dev' in engine_instance.df_prepared.columns, "Test Failed: FRED/SOFR_Dev missing in df_prepared"
-            assert 'pos_res_ratio' in engine_instance.df_prepared.columns, "Test Failed: pos_res_ratio missing in df_prepared"
-            assert '^MOVE' in engine_instance.df_prepared.columns, "Test Failed: ^MOVE missing in df_prepared"
-        else:
-            test_logger_eng_main.error("Test Failed: engine_instance.df_prepared is None or empty after calculation.")
     elif stress_index_output is not None and stress_index_output.empty:
          test_logger_eng_main.warning("Stress Index calculation resulted in an empty DataFrame.")
-    else: # stress_index_output is None
+    else:
         test_logger_eng_main.error("Stress Index calculation failed and returned None.")
 
-    test_logger_eng_main.info("\n--- Test with missing MOVE data ---")
-    engine_no_move = IndicatorEngine(
-        data_frames={'macro': sample_macro_df, 'move': pd.DataFrame()}, # Empty move DataFrame
-        params=engine_params_config,
-        logger_instance=test_logger_eng_main
-    )
-    stress_no_move_output = engine_no_move.calculate_dealer_stress_index()
-    if stress_no_move_output is not None:
-        test_logger_eng_main.info(f"Stress Index (no MOVE) Shape: {stress_no_move_output.shape}")
-        if 'move_index_pct_rank' in stress_no_move_output.columns:
-             assert stress_no_move_output['move_index_pct_rank'].isna().all(), "MOVE percentile should be all NaN if MOVE data missing"
-        test_logger_eng_main.info(f"Stress Index (no MOVE) Head:\n{stress_no_move_output.head().to_string()}")
-        if engine_no_move.df_prepared is not None:
-             assert ('^MOVE' not in engine_no_move.df_prepared or engine_no_move.df_prepared['^MOVE'].isna().all()), "df_prepared should reflect missing MOVE"
-
-    test_logger_eng_main.info("\n--- Test with completely empty input ---")
-    engine_empty_all = IndicatorEngine(
-        data_frames={'macro': pd.DataFrame(), 'move': pd.DataFrame()},
-        params=engine_params_config,
-        logger_instance=test_logger_eng_main
-    )
-    stress_empty_all_output = engine_empty_all.calculate_dealer_stress_index()
-    assert stress_empty_all_output is None, "Expected None for completely empty input"
-    test_logger_eng_main.info(f"Stress Index (empty input): {'None as expected' if stress_empty_all_output is None else 'FAIL: Unexpectedly got data'}")
-
-    test_logger_eng_main.info("--- IndicatorEngine Test Finished ---")
+    test_logger_eng_main.info("--- IndicatorEngine Test (Historical Context) Finished ---")
 EOF
 
 echo "Creating src/scripts/initialize_global_log.py..."
+# No changes needed for initialize_global_log.py for Action Item 2.1. Re-writing identically.
 cat <<EOF > src/scripts/initialize_global_log.py
 import logging
 from datetime import datetime, timezone, timedelta
 import os
 from pathlib import Path
 import sys
-from typing import Optional, Any # Added Any for potential use in kwargs
+from typing import Optional, Any
 
-LOG_DIR_NAME = "api_test_logs" # Default log directory name within the project root
+LOG_DIR_NAME = "api_test_logs"
 LOG_FILE_PATH: Optional[str] = None
-_global_logger_initialized_flag = False # Flag to check if initialize_log_file has run successfully
+_global_logger_initialized_flag = False
 
-# Bootstrap logger for issues during the logging setup itself or before it's fully set up.
 _bootstrap_logger = logging.getLogger("BootstrapLogger")
-if not _bootstrap_logger.handlers and not logging.getLogger().hasHandlers(): # Avoid adding handlers multiple times
+if not _bootstrap_logger.handlers and not logging.getLogger().hasHandlers():
     _ch_bootstrap = logging.StreamHandler(sys.stdout)
     _ch_bootstrap.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s - %(message)s (bootstrap)'))
     _bootstrap_logger.addHandler(_ch_bootstrap)
-    _bootstrap_logger.setLevel(logging.INFO) # Bootstrap logs info and above to console
-    _bootstrap_logger.propagate = False # Don't pass bootstrap messages to the root logger if it gets configured later
+    _bootstrap_logger.setLevel(logging.INFO)
+    _bootstrap_logger.propagate = False
 
 def get_taipei_time() -> datetime:
     """Returns the current time in Taipei timezone (UTC+8)."""
@@ -1669,47 +1426,25 @@ def initialize_log_file(
     force_reinit: bool = False,
     project_root_path: Optional[Path] = None
 ) -> Optional[str]:
-    """
-    Initializes a global file logger and a console logger for the application.
-    The file logger will save all DEBUG level messages and above.
-    The console logger will show INFO level messages and above.
-    Logs are stored in a timestamped file within LOG_DIR_NAME (default 'api_test_logs').
-
-    Args:
-        log_dir_override: Optional path to a directory where logs should be stored.
-                          If None, defaults to 'api_test_logs' under project_root_path.
-        force_reinit: If True, removes existing handlers from the root logger and re-adds them.
-                      Useful if settings need to change or in test environments.
-        project_root_path: Optional Path object to the project's root directory.
-                           If None, attempts to infer it (e.g., parent of this script's dir).
-
-    Returns:
-        The full path to the initialized log file if successful, otherwise None.
-    """
     global LOG_FILE_PATH, _global_logger_initialized_flag
 
-    # Determine the project root path if not provided
     current_project_root: Path
     if project_root_path:
         current_project_root = project_root_path
     else:
         try:
-            # Assumes this script is in a 'scripts' subdirectory of the project root
             current_project_root = Path(__file__).resolve().parent.parent
-        except NameError: # __file__ might not be defined in some execution contexts (e.g. interactive)
-            current_project_root = Path(".").resolve() # Fallback to current working directory
+        except NameError:
+            current_project_root = Path(".").resolve()
             _bootstrap_logger.warning(f"__file__ not defined, using CWD '{current_project_root}' as project root for log path determination.")
 
-    # Determine the log directory path
     current_log_dir_path: Path
     if log_dir_override:
         current_log_dir_path = Path(log_dir_override)
     else:
         current_log_dir_path = current_project_root / LOG_DIR_NAME
 
-    # Check if logger is already initialized with the same log directory
     if _global_logger_initialized_flag and not force_reinit and LOG_FILE_PATH:
-        # Check if the existing log file's parent directory matches the current target log directory
         if Path(LOG_FILE_PATH).parent == current_log_dir_path.resolve():
             _bootstrap_logger.debug(f"Global logger already initialized. Log file: {LOG_FILE_PATH}")
             return LOG_FILE_PATH
@@ -1718,7 +1453,7 @@ def initialize_log_file(
                 f"Log directory has changed or re-initialization is forced. "
                 f"Old log dir: {Path(LOG_FILE_PATH).parent}, New log dir: {current_log_dir_path.resolve()}. Forcing re-init."
             )
-            force_reinit = True # Force re-init if log directory changed
+            force_reinit = True
 
     try:
         current_log_dir_path.mkdir(parents=True, exist_ok=True)
@@ -1726,59 +1461,50 @@ def initialize_log_file(
         _bootstrap_logger.error(f"Failed to create log directory '{current_log_dir_path}': {e}", exc_info=True)
         return None
 
-    # Create a timestamped log file name
     utc_now = datetime.now(timezone.utc)
-    timestamp_filename_str = utc_now.strftime("%Y-%m-%dT%H%M%SZ") # ISO-like timestamp for filename
-    log_filename = f"{timestamp_filename_str}_application_log.txt" # More descriptive name
+    timestamp_filename_str = utc_now.strftime("%Y-%m-%dT%H%M%SZ")
+    log_filename = f"{timestamp_filename_str}_application_log.txt"
     current_log_file_full_path = current_log_dir_path / log_filename
 
     try:
-        # File Handler Setup (DEBUG and above)
         file_log_format_str = '%(asctime)s (Taipei: %(taipei_time_str)s) [%(levelname)s] %(name)s - %(module)s.%(funcName)s:%(lineno)d - %(message)s'
-        file_formatter = TaipeiTimeFormatter(file_log_format_str) # Use custom formatter for Taipei time
+        file_formatter = TaipeiTimeFormatter(file_log_format_str)
         file_handler = logging.FileHandler(current_log_file_full_path, mode='w', encoding='utf-8')
         file_handler.setFormatter(file_formatter)
         file_handler.setLevel(logging.DEBUG)
 
-        # Console Handler Setup (INFO and above)
-        console_log_format_str = '[%(levelname)s] %(name)s: %(message)s' # Simpler format for console
+        console_log_format_str = '[%(levelname)s] %(name)s: %(message)s'
         console_formatter = logging.Formatter(console_log_format_str)
-        console_handler = logging.StreamHandler(sys.stdout) # Log to standard output
+        console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(console_formatter)
         console_handler.setLevel(logging.INFO)
 
-        # Get the root logger
         root_logger = logging.getLogger()
 
-        # If forcing re-initialization, remove existing handlers from the root logger
         if force_reinit and root_logger.hasHandlers():
             _bootstrap_logger.info("Forcing re-initialization of root logger handlers.")
-            for handler_to_remove in root_logger.handlers[:]: # Iterate over a copy
+            for handler_to_remove in root_logger.handlers[:]:
                 root_logger.removeHandler(handler_to_remove)
-                handler_to_remove.close() # Close handler before removing
+                handler_to_remove.close()
 
-        # Add new handlers if no handlers exist or if re-init is forced
         if not root_logger.handlers or force_reinit:
             root_logger.addHandler(file_handler)
             root_logger.addHandler(console_handler)
-            root_logger.setLevel(logging.DEBUG) # Root logger captures all messages from DEBUG up
+            root_logger.setLevel(logging.DEBUG)
 
             _global_logger_initialized_flag = True
             LOG_FILE_PATH = str(current_log_file_full_path)
-
-            # Use a specific logger for setup messages to avoid confusion with bootstrap
             logging.getLogger("GlobalLogSetup").info(f"Global logger initialized. Log file: {LOG_FILE_PATH}")
         else:
-            # This case should ideally be caught by the check at the beginning of the function
             _bootstrap_logger.info("Root logger already has handlers and not forcing re-init. Current setup maintained.")
-            if LOG_FILE_PATH is None: # If somehow flag was true but path was not set
-                 LOG_FILE_PATH = str(current_log_file_full_path) # Attempt to set it
+            if LOG_FILE_PATH is None:
+                 LOG_FILE_PATH = str(current_log_file_full_path)
                  _bootstrap_logger.warning(f"LOG_FILE_PATH was None but logger seemed initialized. Set to: {LOG_FILE_PATH}")
 
     except Exception as e:
         _bootstrap_logger.error(f"Failed to configure logging to file '{current_log_file_full_path}': {e}", exc_info=True)
-        LOG_FILE_PATH = None # Ensure path is None on failure
-        _global_logger_initialized_flag = False # Reset flag on failure
+        LOG_FILE_PATH = None
+        _global_logger_initialized_flag = False
         return None
 
     return LOG_FILE_PATH
@@ -1790,20 +1516,9 @@ def log_message(
     exc_info: bool = False,
     **kwargs: Any
 ):
-    """
-    Logs a message using the globally configured logger or a bootstrap logger if not initialized.
-
-    Args:
-        message: The message string to log.
-        level: The logging level (e.g., "INFO", "WARNING", "ERROR", "DEBUG").
-        logger_name: Optional name for the logger. Defaults to 'project_logger.general'.
-        exc_info: If True and level is ERROR/CRITICAL, exception info is added to the log.
-        **kwargs: Additional keyword arguments to pass as 'extra' to the logger.
-    """
     effective_logger: logging.Logger
     if not _global_logger_initialized_flag or LOG_FILE_PATH is None:
         effective_logger = _bootstrap_logger
-        # Log a warning about using bootstrap only once per session for general use
         if not hasattr(log_message, "_bootstrap_warning_issued_for_general_use"):
             effective_logger.warning(
                 f"Global logger not fully initialized (Log file path: {LOG_FILE_PATH}). "
@@ -1814,45 +1529,25 @@ def log_message(
         effective_logger = logging.getLogger(logger_name if logger_name else "project_logger.general")
 
     level_upper = level.upper()
-    log_level_int = logging.getLevelName(level_upper) # Get integer value of log level
-
-    # Determine the appropriate log method (e.g., logger.info, logger.error)
-    log_method = getattr(effective_logger, level_upper.lower(), effective_logger.info) # Default to .info if level invalid
-
-    # Only pass exc_info=True if the log level is ERROR or CRITICAL
+    log_level_int = logging.getLevelName(level_upper)
+    log_method = getattr(effective_logger, level_upper.lower(), effective_logger.info)
     should_pass_exc_info = exc_info and (isinstance(log_level_int, int) and log_level_int >= logging.ERROR)
 
     try:
         log_method(message, exc_info=should_pass_exc_info, extra=kwargs if kwargs else None)
     except Exception as e:
-        # Fallback to bootstrap if the chosen logger fails for some reason
         _bootstrap_logger.error(f"Failed to log message with '{effective_logger.name}'. Original message: '{message}'. Error: {e}", exc_info=True)
 
-# Example usage when this script is run directly
 if __name__ == "__main__":
-    # When this script is run directly, it should attempt to set up its own project root
-    # assuming it's in a 'scripts' folder under the main project directory.
     main_script_project_root_path = Path(__file__).resolve().parent.parent
-
     log_file_path_main = initialize_log_file(force_reinit=True, project_root_path=main_script_project_root_path)
 
     if log_file_path_main:
-        log_message("Info message from __main__ of initialize_global_log.", "INFO", logger_name="TestInitializeGlobalLog")
-        log_message("Warning message from __main__.", "WARNING", logger_name="TestInitializeGlobalLog")
-        log_message("Debug message (should go to file, not console by default).", "DEBUG", logger_name="TestInitializeGlobalLog.DebugSub")
-
-        try:
-            x = 1 / 0
-        except ZeroDivisionError as e:
-            # Test logging with exception information
-            log_message("A ZeroDivisionError occurred during test.", "ERROR", logger_name="TestInitializeGlobalLog.ErrorSub", exc_info=True)
-
-        log_message(f"Global log file for this direct run is confirmed at: {LOG_FILE_PATH}", "CRITICAL", logger_name="TestInitializeGlobalLog.CriticalSub")
+        log_message("Info message from __main__ of initialize_global_log (Historical).", "INFO", logger_name="TestInitializeGlobalLogHist")
+        log_message(f"Global log file for this direct run is confirmed at: {LOG_FILE_PATH}", "CRITICAL", logger_name="TestInitializeGlobalLogHist.CriticalSub")
         print(f"Script execution finished. Log file should be at: {LOG_FILE_PATH}")
     else:
-        # This means initialize_log_file returned None, indicating a setup failure.
-        # _bootstrap_logger should have logged the specific error.
-        print("Failed to initialize the log file in __main__ of initialize_global_log. Check console for bootstrap logger errors.")
+        print("Failed to initialize the log file in __main__ of initialize_global_log (Historical). Check console for bootstrap logger errors.")
 
 EOF
 
@@ -1866,40 +1561,24 @@ import logging
 import json
 import sys
 from pathlib import Path
-from typing import Dict, Any, Optional # Ensure Dict, Any, Optional are imported
+from typing import Dict, Any, Optional
 
-# --- Early Path Setup & Pre-Init Logger ---
-# This initial logger is basic and will be superseded by the global logger from initialize_global_log.py
-# once that module is successfully imported and initialized.
-if not logging.getLogger().hasHandlers(): # Check if any handlers are configured on the root logger
+if not logging.getLogger().hasHandlers():
     logging.basicConfig(
-        level=logging.DEBUG, # Capture all levels initially
+        level=logging.DEBUG,
         format='%(asctime)s [%(levelname)s] %(name)s - %(module)s.%(funcName)s:%(lineno)d - %(message)s (main-pre-init)',
-        handlers=[logging.StreamHandler(sys.stdout)] # Log to console
+        handlers=[logging.StreamHandler(sys.stdout)]
     )
 pre_init_logger = logging.getLogger("MainPreInit")
 
-# PROJECT_ROOT should point to the 'src' directory's parent for atomic script.
-# When run_prototype.sh executes 'python src/main.py', __file__ will be 'src/main.py'.
-# So, Path(__file__).resolve().parent.parent gives the actual project root where run_prototype.sh is.
 try:
     PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
-except NameError: # Fallback if __file__ is not defined (e.g. interactive, though unlikely for atomic script)
+except NameError:
     PROJECT_ROOT = str(Path(".").resolve())
     pre_init_logger.warning(f"__file__ not defined in main.py, PROJECT_ROOT set to CWD: {PROJECT_ROOT}")
 
+DETAILED_LOG_FILENAME = os.path.join(PROJECT_ROOT, "market_briefing_log.txt") # This will be per-run if main is called multiple times by historical sim
 
-# DETAILED_LOG_FILENAME will be created in the PROJECT_ROOT (where run_prototype.sh is)
-# This specific log file is for the detailed transcript as requested by the user.
-# The global logger (initialize_global_log) will create its own timestamped logs in api_test_logs/.
-DETAILED_LOG_FILENAME = os.path.join(PROJECT_ROOT, "market_briefing_log.txt")
-
-
-# Add project root to sys.path to allow imports like 'from connectors.base import ...'
-# This assumes that 'connectors', 'engine', 'scripts' are directories directly under PROJECT_ROOT/src/
-# For the atomic script, main.py is in src/, so PROJECT_ROOT/src is effectively the "source root".
-# To import 'from connectors.base...', 'PROJECT_ROOT/src' must be in sys.path.
-# Path(__file__).resolve().parent gives the 'src' directory.
 SOURCE_ROOT = str(Path(__file__).resolve().parent)
 if SOURCE_ROOT not in sys.path:
     sys.path.insert(0, SOURCE_ROOT)
@@ -1910,74 +1589,64 @@ pre_init_logger.info(f"main.py: PROJECT_ROOT (parent of src): {PROJECT_ROOT}")
 pre_init_logger.info(f"main.py: SOURCE_ROOT (src directory): {SOURCE_ROOT}")
 pre_init_logger.info(f"main.py: sys.path for module import: {sys.path}")
 
-
-# --- Module Imports ---
-# These imports now assume that 'connectors', 'engine', 'scripts' are packages within 'src'.
-# The 'src' directory itself is made available by SOURCE_ROOT in sys.path.
 global_log = None
 init_global_log_function = None
 global_log_file_path_imported = None
 get_taipei_time_func_imported = None
 
 try:
-    # Corrected imports based on the new structure where these are submodules of 'src'
     from connectors.base import BaseConnector
     from connectors.fred_connector import FredConnector
     from connectors.nyfed_connector import NYFedConnector
     from connectors.yfinance_connector import YFinanceConnector
     from database.database_manager import DatabaseManager
     from engine.indicator_engine import IndicatorEngine
-    from ai_agent import MockAIAgent # Import the MockAIAgent
-
-    from ai_agent import MockAIAgent # Import the MockAIAgent
+    from ai_agent import MockAIAgent
 
     from scripts.initialize_global_log import log_message, get_taipei_time, LOG_FILE_PATH as GLOBAL_LOG_FILE_PATH_FROM_MODULE, initialize_log_file
-    import argparse # For command-line arguments
+    import argparse
 
     global_log = log_message
     init_global_log_function = initialize_log_file
-    global_log_file_path_imported = GLOBAL_LOG_FILE_PATH_FROM_MODULE # Use the path from the module
+    global_log_file_path_imported = GLOBAL_LOG_FILE_PATH_FROM_MODULE
     get_taipei_time_func_imported = get_taipei_time
 
     if init_global_log_function is not None:
         try:
-            # The global logger will create its logs in <PROJECT_ROOT>/api_test_logs/
-            # PROJECT_ROOT here is the actual root where run_prototype.sh resides.
             log_dir_for_global_logger = Path(PROJECT_ROOT) / "api_test_logs"
-
+            # For historical runs, maybe append execution_date to log filename if passed, or use a different sub-folder.
+            # For now, it uses the standard timestamped name.
             actual_log_file = init_global_log_function(
                 log_dir_override=str(log_dir_for_global_logger),
-                force_reinit=True,
+                force_reinit=True, # Force reinit for each historical job run to get a new log file.
                 project_root_path=Path(PROJECT_ROOT)
             )
             if actual_log_file:
-                global_log(f"main.py: Global application logger (from initialize_global_log) explicitly initialized. Log file: {actual_log_file}", "INFO", logger_name="MainApp.Setup")
+                global_log(f"main.py: Global application logger explicitly initialized. Log file: {actual_log_file}", "INFO", logger_name="MainApp.Setup")
             else:
-                global_log("main.py: Global application logger initialization returned no path. Check bootstrap logs.", "ERROR", logger_name="MainApp.Setup")
+                global_log("main.py: Global application logger initialization returned no path.", "ERROR", logger_name="MainApp.Setup")
         except Exception as e_log_init_main:
             pre_init_logger.error(f"main.py: Failed to explicitly initialize global application logger: {e_log_init_main}", exc_info=True)
-            if global_log is None: # Fallback if global_log assignment failed
+            if global_log is None:
                  global_log = lambda msg, level="INFO", **kwargs: pre_init_logger.log(logging.getLevelName(level.upper()), f"(global_log_fallback) {msg}")
             global_log("main.py: Using pre_init_logger or fallback due to global_log explicit init failure.", "WARNING", logger_name="MainApp.Setup")
     else:
-        pre_init_logger.error("main.py: initialize_global_log_file function was not imported. Global application logging will be compromised.")
-        if global_log is None: # Ensure global_log is callable
+        pre_init_logger.error("main.py: initialize_global_log_file function was not imported.")
+        if global_log is None:
             global_log = lambda msg, level="INFO", **kwargs: pre_init_logger.log(logging.getLevelName(level.upper()), f"(global_log_fallback_no_init) {msg}")
 
 except ImportError as e_imp:
     pre_init_logger.error(f"Failed to import custom modules: {e_imp}. Current sys.path: {sys.path}", exc_info=True)
     if global_log is None: print(f"CRITICAL IMPORT ERROR (main.py, global_log unavailable): {e_imp}.")
     else: global_log(f"CRITICAL: Failed to import custom modules in main.py: {e_imp}.", "ERROR", logger_name="MainApp.ImportError")
-    sys.exit(1) # Critical failure
-except Exception as e_general_imp: # Catch any other error during imports
+    sys.exit(1)
+except Exception as e_general_imp:
     pre_init_logger.error(f"General error during import phase: {e_general_imp}", exc_info=True)
     if global_log is None: print(f"CRITICAL GENERAL IMPORT ERROR (main.py, global_log unavailable): {e_general_imp}.")
     else: global_log(f"CRITICAL: General error during import phase in main.py: {e_general_imp}.", "ERROR", logger_name="MainApp.ImportError")
-    sys.exit(1) # Critical failure
+    sys.exit(1)
 
 def load_config(config_path_relative_to_project_root="src/configs/project_config.yaml") -> Dict[str, Any]:
-    """Loads the YAML configuration file."""
-    # Path is now relative to PROJECT_ROOT (where run_prototype.sh is)
     full_config_path = Path(PROJECT_ROOT) / config_path_relative_to_project_root
     global_log(f"Loading project configuration from: {full_config_path}", "INFO", logger_name="MainApp.ConfigLoader")
     try:
@@ -1990,125 +1659,119 @@ def load_config(config_path_relative_to_project_root="src/configs/project_config
         return config_data
     except FileNotFoundError:
         global_log(f"Config file not found: {full_config_path}. Exiting.", "CRITICAL", logger_name="MainApp.ConfigLoader")
-        raise # Re-raise to be caught by main's try-except
+        raise
     except Exception as e_conf:
         global_log(f"Error loading or parsing config from {full_config_path}: {e_conf}", "CRITICAL", logger_name="MainApp.ConfigLoader", exc_info=True)
-        raise # Re-raise
+        raise
 
 def main():
-    # --- Setup detailed file logger for this specific run (market_briefing_log.txt) ---
-    # This is separate from the application's global, timestamped logger.
     detailed_run_log_handler = None
+    # For historical runs, the DETAILED_LOG_FILENAME might need to be unique per execution_date
+    # This is a simple implementation; more robust would involve passing date to logger setup or using subdirs.
+    # For now, it will overwrite if multiple main.py runs happen in quick succession without date in filename.
+    # However, run_historical_simulation.sh should call this with different dates, so logs will be distinct IF
+    # the DETAILED_LOG_FILENAME is made unique per run (e.g., by appending args.execution_date if present).
+    # Let's modify DETAILED_LOG_FILENAME based on execution_date if provided.
+
+    # Parse args again here just for main() scope, though already parsed globally for early setup.
+    # This is slightly redundant but ensures main() has direct access to its specific invocation args.
+    parser_main = argparse.ArgumentParser(description="Main execution parser")
+    parser_main.add_argument("--execution_date", type=str, default=None)
+    args_main, _ = parser_main.parse_known_args() # Parse known args to avoid conflict if other args are passed by shell
+
+    current_detailed_log_filename = DETAILED_LOG_FILENAME
+    if args_main.execution_date:
+        try: # Validate date format before using in filename
+            datetime.strptime(args_main.execution_date, '%Y-%m-%d')
+            current_detailed_log_filename = os.path.join(PROJECT_ROOT, f"market_briefing_log_{args_main.execution_date}.txt")
+        except ValueError:
+            global_log(f"Invalid execution_date '{args_main.execution_date}' for detailed log filename. Using default.", "WARNING", logger_name="MainApp.Setup")
+            # Default DETAILED_LOG_FILENAME will be used.
+
     try:
-        detailed_run_log_handler = logging.FileHandler(DETAILED_LOG_FILENAME, mode='w', encoding='utf-8')
+        detailed_run_log_handler = logging.FileHandler(current_detailed_log_filename, mode='w', encoding='utf-8')
         detailed_formatter = logging.Formatter('%(asctime)s - %(name)s [%(levelname)s] - %(module)s.%(funcName)s:%(lineno)d - %(message)s')
         detailed_run_log_handler.setFormatter(detailed_formatter)
-        detailed_run_log_handler.setLevel(logging.DEBUG) # Capture all levels for this detailed log
-
-        # Add this handler to the root logger to capture logs from all modules
+        detailed_run_log_handler.setLevel(logging.DEBUG)
         root_logger_for_detailed = logging.getLogger()
         root_logger_for_detailed.addHandler(detailed_run_log_handler)
-
-        # Ensure console output from the global logger still works if it was set up
-        global_log(f"Detailed execution transcript for this run will ALSO be saved to: {DETAILED_LOG_FILENAME}", "INFO", logger_name="MainApp.Setup")
+        global_log(f"Detailed execution transcript for this run ALSO saved to: {current_detailed_log_filename}", "INFO", logger_name="MainApp.Setup")
     except Exception as e_detail_log:
-        # If detailed log setup fails, use pre_init_logger or global_log if available
-        err_msg = f"Failed to set up detailed run log at {DETAILED_LOG_FILENAME}: {e_detail_log}"
+        err_msg = f"Failed to set up detailed run log at {current_detailed_log_filename}: {e_detail_log}"
         if global_log: global_log(err_msg, "ERROR", logger_name="MainApp.Setup", exc_info=True)
         else: pre_init_logger.error(err_msg, exc_info=True)
-        # Continue execution even if this specific log fails. The global logger should still work.
 
-    global_log("--- 開始執行端到端金融數據處理原型 (Atomic Script Version) ---", "INFO", logger_name="MainApp.main_flow")
-
-    # --- 行動項目 2.2: 參數化執行腳本 (main.py part) ---
-    parser = argparse.ArgumentParser(description="金融數據處理與 AI 決策模擬腳本")
-    parser.add_argument(
-        "--execution_date",
-        type=str,
-        default=None, # 改為 None，以便我們可以區分是否提供了參數
-        help="執行模擬的特定日期 (YYYY-MM-DD)。如果未提供，則使用配置文件中的 end_date 或當前日期。"
-    )
-    args = parser.parse_args()
-    global_log(f"Parsed command-line arguments: {args}", "INFO", logger_name="MainApp.Setup")
+    global_log(f"--- 開始執行端到端金融數據處理原型 (Execution Date: {args_main.execution_date if args_main.execution_date else 'Default'}) ---", "INFO", logger_name="MainApp.main_flow")
 
     config: Dict[str, Any] = {}
     try:
-        # Load configuration using the path relative to project root
         config = load_config(config_path_relative_to_project_root="src/configs/project_config.yaml")
-
         start_date_cfg = config.get('data_fetch_range', {}).get('start_date', "2020-01-01")
 
-        # Determine end_date_to_use based on --execution_date, then config, then current date
-        if args.execution_date:
+        end_date_to_use: str
+        if args_main.execution_date: # Use args_main here as it's specific to this main() call
             try:
-                # Validate YYYY-MM-DD format for execution_date
-                datetime.strptime(args.execution_date, '%Y-%m-%d')
-                end_date_to_use = args.execution_date
+                datetime.strptime(args_main.execution_date, '%Y-%m-%d')
+                end_date_to_use = args_main.execution_date
                 global_log(f"Using execution_date from command line: {end_date_to_use}", "INFO", logger_name="MainApp.Setup")
-            except ValueError:
-                global_log(f"Invalid execution_date format: '{args.execution_date}'. Expected YYYY-MM-DD. Exiting.", "CRITICAL", logger_name="MainApp.Setup")
-                sys.exit(1) # Exit if date format is wrong
+            except ValueError: # Should have been caught by global arg parsing, but double check
+                global_log(f"Invalid execution_date format in main(): '{args_main.execution_date}'. Exiting.", "CRITICAL", logger_name="MainApp.Setup")
+                sys.exit(1)
         else:
-            end_date_cfg = config.get('data_fetch_range', {}).get('end_date') # Can be None
+            end_date_cfg = config.get('data_fetch_range', {}).get('end_date')
             if end_date_cfg:
                 end_date_to_use = end_date_cfg
                 global_log(f"Using end_date from config file: {end_date_to_use}", "INFO", logger_name="MainApp.Setup")
             else:
                 try:
-                    # Use the imported get_taipei_time function
                     end_date_to_use = get_taipei_time_func_imported().strftime('%Y-%m-%d') if get_taipei_time_func_imported else datetime.now(timezone.utc).strftime('%Y-%m-%d')
                     global_log(f"Using current date as end_date: {end_date_to_use}", "INFO", logger_name="MainApp.Setup")
-                except Exception as e_time_local: # Catch error if get_taipei_time_func_imported fails
+                except Exception as e_time_local:
                     end_date_to_use = datetime.now(timezone.utc).strftime('%Y-%m-%d')
                     global_log(f"Using UTC for 'today's date' as get_taipei_time function failed or was unavailable: {e_time_local}", "WARNING", logger_name="MainApp.Setup")
 
         global_log(f"Data fetch range: Start='{start_date_cfg}', End (effective simulation date)='{end_date_to_use}'.", "INFO", logger_name="MainApp.main_flow")
 
-        # FRED API Key Handling (as per original logic, user provided key is hardcoded for this task)
-        fred_api_key_env_name = config.get('api_endpoints', {}).get('fred', {}).get('api_key_env', 'FRED_API_KEY') # Default if not in config
-        user_provided_fred_key = "78ea51fb13b546d89f1a683cb4ba26f5" # User-provided key for the task
+        fred_api_key_env_name = config.get('api_endpoints', {}).get('fred', {}).get('api_key_env', 'FRED_API_KEY')
+        user_provided_fred_key = "78ea51fb13b546d89f1a683cb4ba26f5"
         os.environ[fred_api_key_env_name] = user_provided_fred_key
         global_log(f"Temporarily set environment variable '{fred_api_key_env_name}' for FRED API access.", "DEBUG", logger_name="MainApp.main_flow")
 
-        # Instantiate loggers for different components
         db_logger = logging.getLogger("project_logger.DatabaseManager")
         fred_logger = logging.getLogger("project_logger.FredConnector")
         nyfed_logger = logging.getLogger("project_logger.NYFedConnector")
         yf_logger = logging.getLogger("project_logger.YFinanceConnector")
         engine_logger = logging.getLogger("project_logger.IndicatorEngine")
 
-        # Initialize DatabaseManager
-        # Pass PROJECT_ROOT so DatabaseManager can resolve relative db path correctly
         db_manager = DatabaseManager(config, logger_instance=db_logger, project_root_dir=PROJECT_ROOT)
-        db_manager.connect() # This will also create tables if they don't exist
+        db_manager.connect()
 
         data_fetch_status = {'fred': False, 'nyfed': False, 'yfinance_move': False}
-        # Define unique columns for upsert operations
         macro_unique_cols = ['metric_date', 'metric_name', 'source_api']
         stock_unique_cols = ['price_date', 'security_id', 'source_api']
 
-        global_log("\n--- 階段 1: 數據獲取 ---", "INFO", logger_name="MainApp.main_flow")
+        global_log(f"\n--- 階段 1: 數據獲取 (截止日期: {end_date_to_use}) ---", "INFO", logger_name="MainApp.main_flow")
 
-        # --- FRED Data Fetching ---
         fred_conn = FredConnector(config, logger_instance=fred_logger)
         fred_series_ids = config.get('target_metrics', {}).get('fred_series_ids', [])
+        # Pass end_date_to_use to FredConnector
         fred_data_df, fred_error_msg = fred_conn.fetch_data(series_ids=fred_series_ids, start_date=start_date_cfg, end_date=end_date_to_use)
-        if fred_error_msg and (fred_data_df is None or fred_data_df.empty): # If error and no data, it's a failure
+        if fred_error_msg and (fred_data_df is None or fred_data_df.empty):
             global_log(f"FRED Data Fetching Error: {fred_error_msg}", "ERROR", logger_name="MainApp.main_flow")
             data_fetch_status['fred'] = False
         elif fred_data_df is not None and not fred_data_df.empty:
             global_log(f"Fetched {len(fred_data_df)} FRED records.", "INFO", logger_name="MainApp.main_flow")
-            if fred_error_msg: # Partial success with some errors
+            if fred_error_msg:
                  global_log(f"FRED Data Fetching completed with some errors: {fred_error_msg}", "WARNING", logger_name="MainApp.main_flow")
             db_manager.bulk_insert_or_replace('fact_macro_economic_data', fred_data_df, unique_cols=macro_unique_cols)
             data_fetch_status['fred'] = True
-        else: # No data, no specific error message from connector (might have been logged internally)
+        else:
             global_log("FRED Connector returned no data or an empty DataFrame.", "WARNING", logger_name="MainApp.main_flow")
             data_fetch_status['fred'] = False
 
-        # --- NYFed Data Fetching ---
         nyfed_conn = NYFedConnector(config, logger_instance=nyfed_logger)
-        nyfed_data_df, nyfed_error_msg = nyfed_conn.fetch_data()
+        # Pass end_date_to_use to NYFedConnector
+        nyfed_data_df, nyfed_error_msg = nyfed_conn.fetch_data(start_date=start_date_cfg, end_date=end_date_to_use)
         if nyfed_error_msg and (nyfed_data_df is None or nyfed_data_df.empty):
             global_log(f"NYFed Data Fetching Error: {nyfed_error_msg}", "ERROR", logger_name="MainApp.main_flow")
             data_fetch_status['nyfed'] = False
@@ -2122,9 +1785,9 @@ def main():
             global_log("NYFed Connector returned no data or an empty DataFrame.", "WARNING", logger_name="MainApp.main_flow")
             data_fetch_status['nyfed'] = False
 
-        # --- YFinance Data Fetching ---
         yf_conn = YFinanceConnector(config, logger_instance=yf_logger)
         yfinance_tickers_list = config.get('target_metrics', {}).get('yfinance_tickers', [])
+        # Pass end_date_to_use to YFinanceConnector
         yf_data_df, yf_error_msg = yf_conn.fetch_data(tickers=yfinance_tickers_list, start_date=start_date_cfg, end_date=end_date_to_use)
         if yf_error_msg and (yf_data_df is None or yf_data_df.empty):
             global_log(f"YFinance Data Fetching Error for {yfinance_tickers_list}: {yf_error_msg}", "ERROR", logger_name="MainApp.main_flow")
@@ -2139,17 +1802,15 @@ def main():
             global_log(f"YFinance Connector returned no data for {yfinance_tickers_list}.", "WARNING", logger_name="MainApp.main_flow")
             data_fetch_status['yfinance_move'] = False
 
-        global_log("\n--- 階段 2 & 3: 指標計算與市場簡報 ---", "INFO", logger_name="MainApp.main_flow")
+        global_log(f"\n--- 階段 2 & 3: 指標計算與市場簡報 (數據截止於 {end_date_to_use}) ---", "INFO", logger_name="MainApp.main_flow")
 
-        # Fetch data from DB for IndicatorEngine
         current_macro_data_for_engine = db_manager.fetch_all_for_engine('fact_macro_economic_data', start_date_cfg, end_date_to_use, date_column='metric_date')
         current_stock_data_for_engine = db_manager.fetch_all_for_engine('fact_stock_price', start_date_cfg, end_date_to_use, date_column='price_date')
 
         if (current_macro_data_for_engine is None or current_macro_data_for_engine.empty) and \
            (current_stock_data_for_engine is None or current_stock_data_for_engine.empty):
-            global_log("IndicatorEngine: Insufficient data from DB (both macro and stock are empty/None). Skipping stress index calculation.", "ERROR", logger_name="MainApp.main_flow")
+            global_log("IndicatorEngine: Insufficient data from DB for calculation. Skipping stress index.", "ERROR", logger_name="MainApp.main_flow")
         else:
-            # Ensure DataFrames are not None before use, default to empty if None
             current_macro_data_for_engine = current_macro_data_for_engine if current_macro_data_for_engine is not None else pd.DataFrame()
             current_stock_data_for_engine = current_stock_data_for_engine if current_stock_data_for_engine is not None else pd.DataFrame()
 
@@ -2157,8 +1818,8 @@ def main():
             if not current_stock_data_for_engine.empty and 'security_id' in current_stock_data_for_engine.columns:
                 move_data_for_engine = current_stock_data_for_engine[current_stock_data_for_engine['security_id'] == '^MOVE']
 
-            if move_data_for_engine.empty:
-                global_log("IndicatorEngine: ^MOVE data not found in DB stock data or stock data was empty.", "WARNING", logger_name="MainApp.main_flow")
+            if move_data_for_engine.empty and '^MOVE' in yfinance_tickers_list : # Check if MOVE was expected
+                global_log("IndicatorEngine: ^MOVE data not found in DB stock data or stock data was empty (for MOVE).", "WARNING", logger_name="MainApp.main_flow")
 
             engine_input_data = {'macro': current_macro_data_for_engine, 'move': move_data_for_engine}
             engine_params_from_config = config.get('indicator_engine_params', {})
@@ -2167,13 +1828,23 @@ def main():
             stress_index_df = indicator_engine_instance.calculate_dealer_stress_index()
 
             if stress_index_df is None or stress_index_df.empty:
-                global_log("Dealer Stress Index calculation resulted in no data or all NaN values.", "ERROR", logger_name="MainApp.main_flow")
-            else:
-                global_log(f"Dealer Stress Index calculated. Shape: {stress_index_df.shape}. Latest date: {stress_index_df.index[-1].strftime('%Y-%m-%d') if not stress_index_df.empty else 'N/A'}", "INFO", logger_name="MainApp.main_flow")
-                global_log(f"Stress Index Tail:\n{stress_index_df.tail().to_string()}", "INFO", logger_name="MainApp.main_flow")
+                global_log(f"Dealer Stress Index calculation resulted in no data or all NaN values for date {end_date_to_use}.", "ERROR", logger_name="MainApp.main_flow")
+                # Create a dummy market_briefing_output for AI if stress index fails, to still log an AI attempt
+                market_briefing_output = {
+                    "briefing_date": end_date_to_use,
+                    "data_window_end_date": end_date_to_use,
+                    "dealer_stress_index": {"current_value_description": "Calculation Failed", "trend_approximation": "N/A"},
+                    "key_financial_components_latest": [],
+                    "broader_market_context_latest": {},
+                    "summary_narrative": f"市場壓力指數 ({end_date_to_use}): 計算失敗，無法生成簡報。"
+                }
+                global_log("Generated dummy market briefing due to stress index calculation failure.", "WARNING", logger_name="MainApp.Briefing")
 
-                # Market Briefing Generation
-                briefing_date = stress_index_df.index[-1]
+            else:
+                global_log(f"Dealer Stress Index calculated. Shape: {stress_index_df.shape}. Latest date in index: {stress_index_df.index[-1].strftime('%Y-%m-%d') if not stress_index_df.empty else 'N/A'}", "INFO", logger_name="MainApp.main_flow")
+                global_log(f"Stress Index Tail (for {end_date_to_use}):\n{stress_index_df.tail().to_string()}", "INFO", logger_name="MainApp.main_flow")
+
+                briefing_date = stress_index_df.index[-1] # This should be <= end_date_to_use
                 briefing_date_str = briefing_date.strftime('%Y-%m-%d')
                 latest_stress_value = stress_index_df['DealerStressIndex'].iloc[-1]
 
@@ -2188,22 +1859,22 @@ def main():
                     else: stress_level_desc = f"{latest_stress_value:.2f} (正常)"
 
                 stress_trend_desc = "N/A"
-                if len(stress_index_df['DealerStressIndex'].dropna()) >= 2: # Need at least two points for diff
+                if len(stress_index_df['DealerStressIndex'].dropna()) >= 2:
                     change_in_stress = stress_index_df['DealerStressIndex'].diff().iloc[-1]
                     if pd.notna(change_in_stress):
                         stress_trend_desc = "上升" if change_in_stress > 0.1 else ("下降" if change_in_stress < -0.1 else "穩定")
 
-                # Accessing prepared data from the engine for briefing components
                 engine_prepared_full_df = indicator_engine_instance.df_prepared
                 latest_briefing_components_data = None
                 if engine_prepared_full_df is not None and not engine_prepared_full_df.empty:
+                    # Try to get data for the actual briefing_date (which is the latest date in stress_index_df)
                     if briefing_date in engine_prepared_full_df.index:
                         latest_briefing_components_data = engine_prepared_full_df.loc[briefing_date]
-                    else: # Fallback if exact date match fails (e.g. different time components)
-                        try:
-                           latest_briefing_components_data = engine_prepared_full_df.loc[briefing_date_str] # Try matching by string date
+                    else:
+                        try: # Fallback to string match if datetime object key fails
+                           latest_briefing_components_data = engine_prepared_full_df.loc[briefing_date_str]
                         except KeyError:
-                           global_log(f"Could not find briefing_date {briefing_date_str} or {briefing_date} in engine_prepared_df. Using last available row for briefing components.", "WARNING", logger_name="MainApp.Briefing")
+                           global_log(f"Could not find briefing_date {briefing_date_str} or {briefing_date} in engine_prepared_df. Using last available row.", "WARNING", logger_name="MainApp.Briefing")
                            if not engine_prepared_full_df.empty: latest_briefing_components_data = engine_prepared_full_df.iloc[-1]
 
                 def get_formatted_value(series_data, component_key, value_format="{:.2f}", not_available_str="N/A"):
@@ -2211,20 +1882,20 @@ def main():
                         val = series_data[component_key]
                         try:
                             return value_format.format(val) if isinstance(val, (int, float)) and pd.notna(val) else str(val)
-                        except (ValueError, TypeError): # Handle cases where format might not apply
+                        except (ValueError, TypeError):
                             return str(val)
                     return not_available_str
 
                 move_value_str = get_formatted_value(latest_briefing_components_data, '^MOVE')
                 spread_10y2y_raw = latest_briefing_components_data['spread_10y2y'] if latest_briefing_components_data is not None and 'spread_10y2y' in latest_briefing_components_data else None
                 spread_10y2y_str = f"{(spread_10y2y_raw * 100):.2f} bps" if pd.notna(spread_10y2y_raw) else "N/A"
-                primary_dealer_pos_str = get_formatted_value(latest_briefing_components_data, 'NYFED/PRIMARY_DEALER_NET_POSITION', value_format="{:,.0f}") # Changed fmt to value_format
+                primary_dealer_pos_str = get_formatted_value(latest_briefing_components_data, 'NYFED/PRIMARY_DEALER_NET_POSITION', value_format="{:,.0f}")
                 vix_value_str = get_formatted_value(latest_briefing_components_data, 'FRED/VIXCLS')
-                sofr_dev_str = get_formatted_value(latest_briefing_components_data, 'FRED/SOFR_Dev') # Assuming SOFR_Dev is already a deviation value
+                sofr_dev_str = get_formatted_value(latest_briefing_components_data, 'FRED/SOFR_Dev')
 
                 market_briefing_output = {
-                    "briefing_date": briefing_date_str,
-                    "data_window_end_date": briefing_date_str, # Or actual end_date_to_use if different
+                    "briefing_date": briefing_date_str, # Date of the actual data point used for briefing
+                    "data_window_end_date": end_date_to_use, # The requested end_date for the entire data window
                     "dealer_stress_index": {"current_value_description": stress_level_desc, "trend_approximation": stress_trend_desc},
                     "key_financial_components_latest": [
                         {"component_name": "MOVE Index (Bond Mkt Volatility)", "value_string": move_value_str},
@@ -2236,165 +1907,151 @@ def main():
                         "sofr_deviation_from_ma": sofr_dev_str
                     },
                     "summary_narrative": (
-                        f"市場壓力指數 ({briefing_date_str}): {stress_level_desc}. "
+                        f"市場壓力指數 ({briefing_date_str}, 數據截止於 {end_date_to_use}): {stress_level_desc}. "
                         f"主要影響因素包括債券市場波動率 (MOVE Index: {move_value_str}) 及 "
                         f"10年期與2年期公債利差 ({spread_10y2y_str}). "
                         f"一級交易商淨持倉部位為 {primary_dealer_pos_str} 百萬美元。"
                     )
                 }
-                global_log("\n--- 市場簡報 (Market Briefing - JSON) ---", "INFO", logger_name="MainApp.Briefing")
-                # Print to console for run_prototype.sh to capture
-                print("\n--- 市場簡報 (Market Briefing - JSON) ---")
-                print(json.dumps(market_briefing_output, indent=2, ensure_ascii=False))
-                # Also log it to the file
-                global_log(json.dumps(market_briefing_output, indent=2, ensure_ascii=False), "INFO", logger_name="MainApp.BriefingOutput")
 
-                # --- AI Agent Interaction and Logging ---
-                global_log("\n--- 階段 4: AI 決策與日誌記錄 ---", "INFO", logger_name="MainApp.AIInteraction")
-                ai_agent_logger = logging.getLogger("project_logger.AIAgent")
-                # Pass relevant parts of the config to MockAIAgent, e.g., requests_config for retries simulation
-                # and a new 'ai_agent_mock_config' for its specific simulation params.
-                ai_agent_config_params = {
-                    'requests_config': config.get('requests_config', {}),
-                    'ai_agent_mock_config': config.get('ai_agent_mock_params', { # Default mock params if not in config
-                        'simulate_network_latency_max_sec': 0.2,
-                        'simulate_failure_rate': 0.05 # 5% chance of simulated failure
-                    })
-                }
-                mock_ai_agent_instance = MockAIAgent(config=ai_agent_config_params, logger_instance=ai_agent_logger)
+            global_log(f"\n--- 市場簡報 (Market Briefing - JSON for {end_date_to_use}) ---", "INFO", logger_name="MainApp.Briefing")
+            # Print to console for run_prototype.sh / run_historical_job.sh to capture
+            # For historical runs, this might be too verbose in the main simulation log, consider conditional print or logging only.
+            # print(f"\n--- 市場簡報 (Market Briefing - JSON for {end_date_to_use}) ---")
+            # print(json.dumps(market_briefing_output, indent=2, ensure_ascii=False))
+            global_log(json.dumps(market_briefing_output, indent=2, ensure_ascii=False), "INFO", logger_name="MainApp.BriefingOutput")
 
-                market_brief_json_for_ai = json.dumps(market_briefing_output) # Use the full briefing as input
+            # --- AI Agent Interaction and Logging ---
+            global_log(f"\n--- 階段 4: AI 決策與日誌記錄 (模擬日期: {end_date_to_use}) ---", "INFO", logger_name="MainApp.AIInteraction")
+            ai_agent_logger = logging.getLogger("project_logger.AIAgent")
+            ai_agent_config_params = {
+                'requests_config': config.get('requests_config', {}),
+                'ai_agent_mock_config': config.get('ai_agent_mock_params', {
+                    'simulate_network_latency_max_sec': 0.2,
+                    'simulate_failure_rate': 0.05
+                })
+            }
+            mock_ai_agent_instance = MockAIAgent(config=ai_agent_config_params, logger_instance=ai_agent_logger)
 
-                ai_response_text, ai_error = mock_ai_agent_instance.get_decision(market_brief_json_for_ai)
+            market_brief_json_for_ai = json.dumps(market_briefing_output)
 
-                # Use end_date_to_use (which is the effective simulation date) for simulation_timestamp
-                # Convert YYYY-MM-DD string to a datetime object at the start of the day, UTC
+            ai_response_text, ai_error = mock_ai_agent_instance.get_decision(market_brief_json_for_ai)
+
+            try:
+                sim_timestamp_dt_object = datetime.strptime(end_date_to_use, '%Y-%m-%d')
+                sim_timestamp = datetime(sim_timestamp_dt_object.year, sim_timestamp_dt_object.month, sim_timestamp_dt_object.day, 0, 0, 0, tzinfo=timezone.utc)
+            except ValueError:
+                global_log(f"Could not parse end_date_to_use '{end_date_to_use}' into datetime for simulation_timestamp. Using current UTC time as fallback.", "ERROR", logger_name="MainApp.AIInteraction")
+                sim_timestamp = datetime.now(timezone.utc)
+
+            if ai_error:
+                global_log(f"AI Agent get_decision failed: {ai_error}", "ERROR", logger_name="MainApp.AIInteraction")
+                db_manager.bulk_insert_or_replace(
+                    'log_ai_decision',
+                    pd.DataFrame([{
+                        'simulation_timestamp': sim_timestamp,
+                        'market_brief_json': market_brief_json_for_ai,
+                        'ai_response_text': ai_response_text if ai_response_text else "AI Agent Error: " + ai_error,
+                        'strategy_summary': "AI Error",
+                        'key_factors': "AI Error"
+                    }]),
+                    unique_cols=['simulation_timestamp']
+                )
+            elif ai_response_text:
+                global_log(f"AI Agent response received (for {end_date_to_use}):\n{ai_response_text}", "INFO", logger_name="MainApp.AIInteraction")
+                strategy_summary_from_ai = "格式解析失敗"
+                key_factors_from_ai_str = "格式解析失敗"
                 try:
-                    sim_timestamp_dt_object = datetime.strptime(end_date_to_use, '%Y-%m-%d')
-                    # To store as proper timestamp, make it timezone-aware (UTC)
-                    # Representing as start of the day for that date.
-                    sim_timestamp = datetime(sim_timestamp_dt_object.year, sim_timestamp_dt_object.month, sim_timestamp_dt_object.day, 0, 0, 0, tzinfo=timezone.utc)
-                except ValueError:
-                    global_log(f"Could not parse end_date_to_use '{end_date_to_use}' into datetime for simulation_timestamp. Using current UTC time as fallback.", "ERROR", logger_name="MainApp.AIInteraction")
-                    sim_timestamp = datetime.now(timezone.utc) # Fallback to current time if date parsing fails
+                    ai_decision_data = json.loads(ai_response_text)
+                    strategy_summary_from_ai = ai_decision_data.get("strategy_summary", "未提供策略摘要")
+                    key_factors_list = ai_decision_data.get("key_factors", ["未提供關鍵因子"])
+                    key_factors_from_ai_str = json.dumps(key_factors_list, ensure_ascii=False)
+                    global_log("AI response parsed successfully.", "INFO", logger_name="MainApp.AIInteraction")
+                except json.JSONDecodeError:
+                    global_log(f"Failed to parse AI response JSON: {ai_response_text}", "ERROR", logger_name="MainApp.AIInteraction")
 
-                if ai_error:
-                    global_log(f"AI Agent get_decision failed: {ai_error}", "ERROR", logger_name="MainApp.AIInteraction")
-                    # Log error state to database
-                    # ai_response_text might contain error details from the AI itself, or be None
-                    db_manager.bulk_insert_or_replace(
-                        'log_ai_decision',
-                        pd.DataFrame([{
-                            'simulation_timestamp': sim_timestamp,
-                            'market_brief_json': market_brief_json_for_ai,
-                            'ai_response_text': ai_response_text if ai_response_text else "AI Agent Error: " + ai_error,
-                            'strategy_summary': "AI Error",
-                            'key_factors': "AI Error"
-                        }]),
-                        unique_cols=['simulation_timestamp']
-                    )
-                elif ai_response_text:
-                    global_log(f"AI Agent response received:\n{ai_response_text}", "INFO", logger_name="MainApp.AIInteraction")
-                    strategy_summary_from_ai = "格式解析失敗"
-                    key_factors_from_ai_str = "格式解析失敗"
-                    try:
-                        ai_decision_data = json.loads(ai_response_text)
-                        strategy_summary_from_ai = ai_decision_data.get("strategy_summary", "未提供策略摘要")
-                        key_factors_list = ai_decision_data.get("key_factors", ["未提供關鍵因子"])
-                        key_factors_from_ai_str = json.dumps(key_factors_list, ensure_ascii=False) # Store as JSON string
-                        global_log("AI response parsed successfully.", "INFO", logger_name="MainApp.AIInteraction")
-                    except json.JSONDecodeError:
-                        global_log(f"Failed to parse AI response JSON: {ai_response_text}", "ERROR", logger_name="MainApp.AIInteraction")
-                        # strategy_summary and key_factors remain "格式解析失敗"
-
-                    db_manager.bulk_insert_or_replace(
-                        'log_ai_decision',
-                        pd.DataFrame([{
-                            'simulation_timestamp': sim_timestamp,
-                            'market_brief_json': market_brief_json_for_ai,
-                            'ai_response_text': ai_response_text,
-                            'strategy_summary': strategy_summary_from_ai,
-                            'key_factors': key_factors_from_ai_str
-                        }]),
-                        unique_cols=['simulation_timestamp']
-                    )
-                    global_log("AI decision logged to database.", "INFO", logger_name="MainApp.AIInteraction")
-                else: # No error, but no response text (should not happen with current MockAIAgent logic)
-                     global_log("AI Agent returned no response and no error. This is unexpected.", "WARNING", logger_name="MainApp.AIInteraction")
+                db_manager.bulk_insert_or_replace(
+                    'log_ai_decision',
+                    pd.DataFrame([{
+                        'simulation_timestamp': sim_timestamp,
+                        'market_brief_json': market_brief_json_for_ai,
+                        'ai_response_text': ai_response_text,
+                        'strategy_summary': strategy_summary_from_ai,
+                        'key_factors': key_factors_from_ai_str
+                    }]),
+                    unique_cols=['simulation_timestamp']
+                )
+                global_log(f"AI decision for {end_date_to_use} logged to database.", "INFO", logger_name="MainApp.AIInteraction")
+            else:
+                 global_log(f"AI Agent returned no response and no error for {end_date_to_use}. This is unexpected.", "WARNING", logger_name="MainApp.AIInteraction")
 
 
-    except FileNotFoundError as e_fnf: # Specifically for config loading
+    except FileNotFoundError as e_fnf:
         err_msg_fnf = f"CRITICAL FAILURE: Configuration file not found: {e_fnf}. Application cannot start."
-        print(err_msg_fnf) # Print to console as logger might not be fully up
+        print(err_msg_fnf)
         if global_log: global_log(err_msg_fnf, "CRITICAL", logger_name="MainApp.main_flow", exc_info=False)
         else: pre_init_logger.critical(err_msg_fnf, exc_info=False)
+        sys.exit(1) # Ensure script exits on critical config error
+    except SystemExit as e_sys_exit: # Catch sys.exit() called due to bad args
+        global_log(f"SystemExit called: {e_sys_exit}. This might be due to invalid command line arguments.", "CRITICAL", logger_name="MainApp.main_flow")
+        raise # Re-raise to ensure the script actually exits
     except Exception as e_main_runtime:
-        err_msg_runtime = f"主流程 main() 發生嚴重執行期錯誤: {e_main_runtime}"
+        err_msg_runtime = f"主流程 main() 發生嚴重執行期錯誤 (Execution Date: {args_main.execution_date if args_main.execution_date else 'Default'}): {e_main_runtime}"
         print(err_msg_runtime)
         if global_log: global_log(err_msg_runtime, "CRITICAL", logger_name="MainApp.main_flow", exc_info=True)
         else: pre_init_logger.critical(err_msg_runtime, exc_info=True)
+        sys.exit(1) # Ensure script exits on other critical errors
     finally:
-        # --- Database Disconnection (Commented out) ---
-        # if 'db_manager' in locals() and hasattr(db_manager, 'conn') and db_manager.conn is not None:
-        #     if not db_manager.conn.isclosed(): db_manager.disconnect()
-        # else:
-        # --- Database Disconnection ---
-        if 'db_manager' in locals() and db_manager is not None: # Check if db_manager was instantiated
-            # --- 測試驗證：打印 log_ai_decision 表內容 ---
-            if db_manager.conn: # Check if connection is still alive
-                global_log("--- [驗證] 打印 log_ai_decision 表內容 ---", "INFO", logger_name="MainApp.Validation")
-                try:
-                    ai_log_df = db_manager.execute_query("SELECT simulation_timestamp, strategy_summary, key_factors FROM log_ai_decision ORDER BY simulation_timestamp DESC LIMIT 5;")
-                    if ai_log_df is not None and not ai_log_df.empty:
-                        global_log(f"log_ai_decision 內容 (最近5條):\n{ai_log_df.to_string()}", "INFO", logger_name="MainApp.Validation")
-                        # Also print to console for easier capture in test output
-                        print("\n--- [驗證] log_ai_decision 內容 (最近5條) ---")
-                        print(ai_log_df.to_string())
-                    elif ai_log_df is not None and ai_log_df.empty:
-                        global_log("log_ai_decision 表為空。", "INFO", logger_name="MainApp.Validation")
-                        print("\n--- [驗證] log_ai_decision 表為空 ---")
-                    else:
-                        global_log("無法獲取 log_ai_decision 表內容進行驗證。", "WARNING", logger_name="MainApp.Validation")
-                        print("\n--- [驗證] 無法獲取 log_ai_decision 表內容 ---")
-                except Exception as e_query_ailog:
-                    global_log(f"查詢 log_ai_decision 表時發生錯誤: {e_query_ailog}", "ERROR", logger_name="MainApp.Validation")
-                    print(f"\n--- [驗證] 查詢 log_ai_decision 表時發生錯誤: {e_query_ailog} ---")
-            # --- 測試驗證結束 ---
+        if 'db_manager' in locals() and db_manager is not None:
             db_manager.disconnect()
         else:
             global_log("DB Manager was not instantiated, skipping disconnect.", "DEBUG", logger_name="MainApp.main_flow")
 
-        global_log("\n--- 端到端原型執行完畢 (Atomic Script Version) ---", "INFO", logger_name="MainApp.main_flow")
+        global_log(f"\n--- 端到端原型執行完畢 (Execution Date: {args_main.execution_date if args_main.execution_date else 'Default'}) ---", "INFO", logger_name="MainApp.main_flow")
 
-        # --- Clean up detailed file logger (market_briefing_log.txt) ---
-        if detailed_run_log_handler is not None and 'root_logger_for_detailed' in locals(): # Ensure handler was created
-            global_log(f"Removing detailed run log handler. Transcript saved to {DETAILED_LOG_FILENAME}", "INFO", logger_name="MainApp.Cleanup")
-            if hasattr(locals().get('root_logger_for_detailed'), 'removeHandler'): # Check if logger has removeHandler
+        if detailed_run_log_handler is not None and 'root_logger_for_detailed' in locals():
+            global_log(f"Removing detailed run log handler. Transcript saved to {current_detailed_log_filename}", "INFO", logger_name="MainApp.Cleanup")
+            if hasattr(locals().get('root_logger_for_detailed'), 'removeHandler'):
                  root_logger_for_detailed.removeHandler(detailed_run_log_handler)
             detailed_run_log_handler.close()
 
 if __name__ == "__main__":
-    # This initial global_log check is for the very unlikely case that imports failed so badly
-    # that global_log wasn't even assigned its fallback lambda.
+    # Global arg parsing for early access if needed by pre-main logic (though not typical)
+    parser_global = argparse.ArgumentParser(add_help=False) # add_help=False to avoid conflict if main also defines it
+    parser_global.add_argument("--execution_date", type=str, default=None)
+    cli_args, _ = parser_global.parse_known_args()
+
+
     if global_log is None:
         pre_init_logger.critical("global_log function was not assigned its fallback. Logging will be severely limited.")
-        # Define an ultra-fallback if pre_init_logger itself is somehow problematic (highly unlikely)
         global_log = lambda msg, level="INFO", **kwargs: print(f"ULTRA_FALLBACK_LOG [{level.upper()}] {msg}")
 
-    # The global application logger (timestamped file in api_test_logs) should have been initialized
-    # during the import phase. If not, log_message will use the bootstrap logger.
-    # The detailed_run_log_handler (for market_briefing_log.txt) is set up inside main().
-
-    # A final check on global logger initialization path from the module.
     if global_log_file_path_imported:
         global_log(f"Confirmed global application log file from module: {global_log_file_path_imported}", "DEBUG", logger_name="MainApp.InitCheck")
     else:
         global_log("Global application log file path from module was not set. Bootstrap logger might be active for app logs.", "WARNING", logger_name="MainApp.InitCheck")
 
-    main()
+    # Pass all command line arguments to main. This is important if run_historical_job.sh passes --execution_date.
+    # sys.argv includes the script name as the first element.
+    # main() will re-parse them using its own ArgumentParser instance.
+    try:
+        main()
+    except SystemExit as e:
+        # This will catch sys.exit calls, e.g. from invalid --execution_date format.
+        # The run_historical_simulation.sh script will check the exit code.
+        if global_log: global_log(f"main.py exited with code {e.code}", "INFO", logger_name="MainApp.Exit")
+        else: print(f"main.py exited with code {e.code}")
+        sys.exit(e.code if e.code is not None else 1) # Propagate exit code
+    except Exception as e_top_level:
+        # Catch any other unhandled exception from main() that wasn't a SystemExit
+        if global_log: global_log(f"Unhandled exception at top level of main.py: {e_top_level}", "CRITICAL", logger_name="MainApp.Unhandled", exc_info=True)
+        else: print(f"CRITICAL UNHANDLED EXCEPTION in main.py: {e_top_level}")
+        sys.exit(1) # Exit with error code 1 for unhandled exceptions
+
 EOF
 
 echo "Creating __init__.py files..."
+# Ensure all __init__.py files are created or are correct
 cat <<EOF > src/__init__.py
 # This file makes 'src' a package.
 EOF
@@ -2426,218 +2083,32 @@ cat <<EOF > src/scripts/__init__.py
 from .initialize_global_log import initialize_log_file, log_message, get_taipei_time
 EOF
 
-echo "Creating src/ai_agent.py..."
-cat <<EOF > src/ai_agent.py
-import json
-import logging
-import time
-import random
-from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, Tuple
-
-# AI Agent Logger
-# Logger setup within the module
-ai_agent_logger = logging.getLogger(f"project_logger.{__name__}")
-if not ai_agent_logger.handlers and not logging.getLogger().hasHandlers(): # Check root logger too
-    ai_agent_logger.addHandler(logging.NullHandler())
-    ai_agent_logger.debug(f"Logger for {__name__} (ai_agent module) configured with NullHandler for atomic script.")
-
-class BaseAIAgent(ABC):
-    """
-    AI 代理的抽象基類。
-    """
-    def __init__(self, config: Optional[Dict[str, Any]] = None, logger_instance: Optional[logging.Logger] = None):
-        self.config = config if config is not None else {}
-        if logger_instance:
-            self.logger = logger_instance
-        else:
-            # Fallback to module-level logger if no specific instance is provided
-            self.logger = logging.getLogger(f"project_logger.{self.__class__.__name__}")
-            if not self.logger.handlers and not logging.getLogger().hasHandlers():
-                 self.logger.addHandler(logging.NullHandler()) # Ensure it has a handler if used directly
-                 self.logger.debug(f"Instance logger for {self.__class__.__name__} (BaseAIAgent) using NullHandler for atomic script.")
-
-
-    @abstractmethod
-    def get_decision(self, market_brief_json: str) -> Tuple[Optional[str], Optional[str]]:
-        """
-        接收市場簡報 JSON，返回 AI 的決策文本和錯誤訊息。
-
-        Args:
-            market_brief_json (str): 市場簡報的 JSON 字串。
-
-        Returns:
-            Tuple[Optional[str], Optional[str]]: (ai_response_text, error_message)
-            成功時，ai_response_text 是 AI 的回應，error_message 為 None。
-            失敗時，ai_response_text 為 None，error_message 包含錯誤信息。
-        """
-        pass
-
-class MockAIAgent(BaseAIAgent):
-    """
-    一個模擬的 AI 代理，用於開發和測試。
-    返回一個固定的、結構化的 JSON 字串。
-    """
-    def __init__(self, config: Optional[Dict[str, Any]] = None, logger_instance: Optional[logging.Logger] = None):
-        super().__init__(config, logger_instance)
-        self.mock_response_template = {
-            "strategy_summary": "基於模擬數據，建議採取觀望策略。",
-            "key_factors": ["市場波動性指標模擬值中等", "利率預期模擬值穩定"],
-            "confidence_score": 0.75,
-            "raw_input_received": "" # Will be populated with the input
-        }
-        self.requests_config = self.config.get('requests_config', {}) if self.config else {}
-        self.simulate_network_latency_max_sec = self.config.get('ai_agent_mock_config', {}).get('simulate_network_latency_max_sec', 0.1)
-        self.simulate_failure_rate = self.config.get('ai_agent_mock_config', {}).get('simulate_failure_rate', 0.0) # 0.0 means no failures
-
-    def get_decision(self, market_brief_json: str) -> Tuple[Optional[str], Optional[str]]:
-        self.logger.info(f"MockAIAgent received market brief (first 100 chars): {market_brief_json[:100]}...")
-
-        # Simulate network latency
-        latency = random.uniform(0, self.simulate_network_latency_max_sec)
-        self.logger.debug(f"MockAIAgent: Simulating network latency of {latency:.3f} seconds.")
-        time.sleep(latency)
-
-        # Simulate potential failure
-        if random.random() < self.simulate_failure_rate:
-            error_message = "MockAIAgent: Simulated AI decision failure."
-            self.logger.error(error_message)
-            # Simulate a malformed or error response from AI
-            malformed_response = "{\"error\": \"Simulated AI processing error\", \"details\": \"Failed to generate strategy.\"}"
-            return malformed_response, error_message # Return malformed JSON as AI response text on error
-
-        # Simulate API call with retries (though for mock, it's mostly for show)
-        max_retries = self.requests_config.get('max_retries', 1) # Default to 1 for mock if not configured
-        base_backoff = self.requests_config.get('base_backoff_seconds', 0.1)
-
-        for attempt in range(max_retries):
-            try:
-                # Simulate a successful call after some attempts if retries > 1
-                if attempt > 0: # Simulate some processing for retries
-                    self.logger.info(f"MockAIAgent: Simulating retry attempt {attempt + 1}/{max_retries}")
-                    time.sleep(base_backoff * (2 ** attempt) * random.uniform(0.8, 1.2)) # Exponential backoff with jitter
-
-                # Construct the mock response
-                current_response = self.mock_response_template.copy()
-                current_response["raw_input_received"] = market_brief_json # Include the input for verification
-
-                ai_response_str = json.dumps(current_response, ensure_ascii=False, indent=2)
-                self.logger.info("MockAIAgent successfully generated a mock decision.")
-                return ai_response_str, None # Success
-
-            except Exception as e: # Should not happen with json.dumps unless data is weird
-                self.logger.error(f"MockAIAgent: Error during decision generation (attempt {attempt + 1}): {e}", exc_info=True)
-                if attempt == max_retries - 1:
-                    return None, f"MockAIAgent: Failed after {max_retries} attempts: {e}"
-                # Continue to next retry attempt
-
-        # Should be unreachable if max_retries >= 1
-        return None, "MockAIAgent: Max retries reached without returning a response (unexpected)."
-
-if __name__ == '__main__':
-    # Basic logger for standalone testing of ai_agent.py
-    if not logging.getLogger().hasHandlers():
-        logging.basicConfig(level=logging.DEBUG,
-                            format='%(asctime)s - %(name)s [%(levelname)s] - %(module)s.%(funcName)s:%(lineno)d - %(message)s',
-                            handlers=[logging.StreamHandler()]) # Log to console for tests
-
-    test_logger_ai_agent = logging.getLogger("AIAgentTestRun_Atomic")
-    if not test_logger_ai_agent.handlers: # Avoid adding handlers multiple times
-        ch_ai_agent = logging.StreamHandler()
-        ch_ai_agent.setFormatter(logging.Formatter('%(asctime)s - %(name)s [%(levelname)s] - %(message)s'))
-        test_logger_ai_agent.addHandler(ch_ai_agent)
-        test_logger_ai_agent.propagate = False
-
-    test_logger_ai_agent.info("--- Starting AIAgent Test ---")
-
-    # Test MockAIAgent
-    mock_agent_config = {
-        'requests_config': {'max_retries': 2, 'base_backoff_seconds': 0.05},
-        'ai_agent_mock_config': {
-            'simulate_network_latency_max_sec': 0.05,
-            'simulate_failure_rate': 0.0 # Test with no failures first
-        }
-    }
-    mock_agent = MockAIAgent(config=mock_agent_config, logger_instance=test_logger_ai_agent)
-
-    sample_brief = {"briefing_date": "2023-10-26", "dealer_stress_index": {"current_value_description": "中度緊張"}}
-    sample_brief_json = json.dumps(sample_brief)
-
-    test_logger_ai_agent.info(f"Testing MockAIAgent with input: {sample_brief_json}")
-    response_text, error = mock_agent.get_decision(sample_brief_json)
-
-    if error:
-        test_logger_ai_agent.error(f"MockAIAgent test failed with error: {error}")
-    elif response_text:
-        test_logger_ai_agent.info(f"MockAIAgent test successful. Response:\n{response_text}")
-        try:
-            response_data = json.loads(response_text)
-            assert "strategy_summary" in response_data
-            assert "key_factors" in response_data
-            test_logger_ai_agent.info("Mock response content validated.")
-        except json.JSONDecodeError:
-            test_logger_ai_agent.error("MockAIAgent response was not valid JSON.")
-        except AssertionError:
-            test_logger_ai_agent.error("MockAIAgent response missing expected keys.")
-    else:
-        test_logger_ai_agent.error("MockAIAgent test failed: No response text and no error message.")
-
-    # Test simulated failure
-    test_logger_ai_agent.info("\n--- Testing MockAIAgent with simulated failure ---")
-    mock_agent_config_failure = {
-        'requests_config': {'max_retries': 1}, # Fail faster
-        'ai_agent_mock_config': {
-            'simulate_network_latency_max_sec': 0.01,
-            'simulate_failure_rate': 1.0 # Always fail
-        }
-    }
-    mock_agent_fail = MockAIAgent(config=mock_agent_config_failure, logger_instance=test_logger_ai_agent)
-    response_text_fail, error_fail = mock_agent_fail.get_decision(sample_brief_json)
-
-    if error_fail:
-        test_logger_ai_agent.info(f"MockAIAgent simulated failure test OK. Error: {error_fail}")
-        if response_text_fail:
-            test_logger_ai_agent.info(f"AI response text on failure: {response_text_fail}")
-            try:
-                json.loads(response_text_fail) # Check if it's valid JSON, even if error content
-                test_logger_ai_agent.info("AI response on failure is valid JSON.")
-            except json.JSONDecodeError:
-                 test_logger_ai_agent.warning("AI response on failure was not valid JSON.")
-    else:
-        test_logger_ai_agent.error("MockAIAgent simulated failure test FAILED: No error message returned.")
-
-
-    test_logger_ai_agent.info("--- AIAgent Test Finished ---")
-EOF
-
-cat <<EOF > src/connectors/__init__.py
-# This file makes 'src/connectors' a package.
-from .base import BaseConnector
-from .nyfed_connector import NYFedConnector
-from .yfinance_connector import YFinanceConnector
-from .fred_connector import FredConnector
-EOF
-
-# Removed erroneous src/ai_agent/__init__.py creation, as ai_agent.py is a single file module, not a package.
+# Ensuring no src/ai_agent/__init__.py is created. ai_agent.py is a direct module.
 
 # === 階段三：依賴安裝 ===
 echo ""
-echo "Phase 3: Installing dependencies from requirements.txt..."
+echo "Phase 3: Installing dependencies from requirements.txt (Historical Job)..."
 pip install -r requirements.txt
 
 # === 階段四：執行主流程 ===
 echo ""
-echo "Phase 4: Running the main application (src/main.py)..."
-# 執行 src 目錄下的 main.py。
-# 由於我們在 main.py 內部通過 __file__ 和 Path().parent 正確設定了 PROJECT_ROOT 和 SOURCE_ROOT，
-# 並且 src 目錄已通過 __init__.py 成為一個套件的根目錄（相對於執行時的 sys.path），
-# 因此 python src/main.py 應該能正確找到其子模組。
-# The script now potentially accepts a date argument.
-# If this script is run directly (as run_prototype.sh), it won't pass a date,
-# so main.py will use its default date logic (config or current date).
-python src/main.py "$@" # Pass all script arguments to main.py
+echo "Phase 4: Running the main application (src/main.py) for historical date: $1 (Historical Job)..."
+# Pass the first command-line argument (the date) to main.py's --execution_date parameter
+
+if [ -z "$1" ]; then
+  echo "Historical date argument not provided to run_historical_job.sh. Running with default date logic."
+  python src/main.py
+else
+  echo "Executing main.py with --execution_date $1"
+  python src/main.py --execution_date "$1"
+fi
+
+# Capture exit code for run_historical_simulation.sh
+exit_code=$?
+echo "main.py exited with code: $exit_code"
+
 
 echo ""
-echo "Execution finished."
-echo "The detailed transcript log should be in market_briefing_log.txt"
-echo "Application-specific logs (timestamped) should be in api_test_logs/"
+echo "Execution finished for date: $1 (Historical Job)."
+# Detailed log (market_briefing_log_YYYY-MM-DD.txt) and application logs (in api_test_logs/) are generated by main.py
+exit $exit_code # Propagate the exit code

@@ -6,14 +6,13 @@ database:
 
 data_fetch_range:
   start_date: "2020-01-01"
-  # end_date: "YYYY-MM-DD" # Optional: If empty, main.py will use current date
+  # end_date is now primarily controlled by the --execution_date argument to main.py
+  # end_date: "YYYY-MM-DD" # Optional: If empty and no --execution_date, main.py will use current date
 
 api_endpoints:
   fred:
-    api_key_env: "FRED_API_KEY" # Actual key is hardcoded in main.py for this task
+    api_key_env: "FRED_API_KEY"
     base_url: "https://api.stlouisfed.org/fred/"
-  # nyfed: # URLs are handled directly in nyfed_primary_dealer_urls
-  # yfinance: # No specific endpoint, yfinance library handles it
 
 target_metrics:
   fred_series_ids:
@@ -24,9 +23,7 @@ target_metrics:
     - "WRESBAL"  # Reserves Balance with Federal Reserve Banks
   yfinance_tickers:
     - "^MOVE"    # ICE BofA MOVE Index (Treasury Volatility)
-    # - "SPY"    # Example: S&P 500 ETF for broader market context if needed
 
-# Configuration for NYFedConnector
 nyfed_primary_dealer_urls:
   - url: "https://www.newyorkfed.org/medialibrary/media/markets/prideal/prideal2024.xlsx"
     file_pattern: "prideal2024.xlsx"
@@ -37,20 +34,16 @@ nyfed_primary_dealer_urls:
   - url: "https://www.newyorkfed.org/medialibrary/media/markets/prideal/prideal2022.xlsx"
     file_pattern: "prideal2022.xlsx"
     format_type: "PD_STATS_FORMAT_2013_ONWARDS"
-  # Add more historical files if needed, e.g.:
-  # - url: "https://www.newyorkfed.org/medialibrary/media/markets/prideal/prideal2021.xlsx"
-  #   file_pattern: "prideal2021.xlsx"
-  #   format_type: "PD_STATS_FORMAT_2013_ONWARDS"
 
 nyfed_format_recipes:
   "PD_STATS_FORMAT_2013_ONWARDS":
-    header_row: 3 # Row number in Excel where headers are (1-indexed)
+    header_row: 3
     date_column: "As of Date"
     columns_to_sum:
       - "U.S. Treasury coupons"
       - "U.S. Treasury bills"
       - "U.S. Treasury floating rate notes (FRNs)"
-      - "Federal agency debt securities (MBS)" # Mortgage-Backed Securities
+      - "Federal agency debt securities (MBS)"
       - "Federal agency debt securities (non-MBS)"
       - "Commercial paper"
       - "Certificates of deposit"
@@ -59,26 +52,29 @@ nyfed_format_recipes:
       - "Corporate bonds (investment grade)"
       - "Corporate bonds (below investment grade)"
       - "Municipal securities"
-      - "Other assets" # This can be a catch-all for various other positions
-    data_unit_multiplier: 1000000 # Data is in millions, convert to actual value
+      - "Other assets"
+    data_unit_multiplier: 1000000
 
-# Configuration for IndicatorEngine
 indicator_engine_params:
-  rolling_window_days: 252 # Approximately 1 trading year
+  rolling_window_days: 252
   stress_index_weights:
     sofr_deviation: 0.20
     spread_10y2y: 0.20
-    primary_dealer_position: 0.15 # Based on NYFED data
+    primary_dealer_position: 0.15
     move_index: 0.25
     vix_index: 0.15
-    pos_res_ratio: 0.05 # Primary Dealer Positions to Reserves Ratio
+    pos_res_ratio: 0.05
   stress_threshold_moderate: 40
   stress_threshold_high: 60
   stress_threshold_extreme: 80
+  min_periods_ratio_for_rolling: 0.5 # Added for IndicatorEngine percentile calculation robustness
 
-# General configuration for requests made by connectors
 requests_config:
   max_retries: 3
   base_backoff_seconds: 1
-  timeout: 30 # Default timeout for most API calls
-  download_timeout: 120 # Longer timeout for file downloads (like NYFed Excel)
+  timeout: 30
+  download_timeout: 120
+
+ai_agent_mock_params: # Configuration for MockAIAgent
+  simulate_network_latency_max_sec: 0.1 # Max seconds for simulated latency
+  simulate_failure_rate: 0.02 # 2% chance of simulated failure

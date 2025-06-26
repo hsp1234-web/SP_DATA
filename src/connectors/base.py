@@ -15,12 +15,14 @@ class BaseConnector(ABC):
         # For now, child classes will initialize their own loggers or use a global one.
 
     @abstractmethod
-    def fetch_data(self, **kwargs) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+    def fetch_data(self, start_date: Optional[str] = None, end_date: Optional[str] = None, **kwargs) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
         """
         從 API 或數據源獲取原始數據並進行初步轉換成 DataFrame (通常是長表格式)。
 
         Args:
-            **kwargs: 特定 connector 需要的參數 (例如 series_ids, tickers, start_date, end_date).
+            start_date (Optional[str]): 數據獲取的開始日期 (YYYY-MM-DD)。
+            end_date (Optional[str]): 數據獲取的結束日期 (YYYY-MM-DD)。此日期為數據上限，不應包含此日期之後的數據。
+            **kwargs: 特定 connector 需要的參數 (例如 series_ids, tickers)。
 
         Returns:
             一個包含 (DataFrame, error_message) 的元組。
@@ -36,16 +38,3 @@ class BaseConnector(ABC):
     def get_source_name(self) -> str:
         """返回數據源的名稱。"""
         return self.source_api_name
-
-    # Common utility methods can be added here if needed, e.g.,
-    # _make_request_with_retries (similar to what was in the old BaseConnector from user's Colab)
-    # or a method to standardize date formats.
-    # For now, keeping it lean as per the new design focusing on fetch_data.
-    # The retry logic from user's previous BaseConnector (with jitter) is excellent
-    # and ideally should be part of a shared HTTP request utility or within each connector's
-    # implementation of how it calls external APIs if not using a library that handles it.
-    # Given the "one-shot build" nature, detailed retry in Base might be over-engineering for now,
-    # and each connector can implement its specific retry or rely on the robustness of the used library.
-    # However, for FREDConnector which uses requests directly, that logic would be valuable.
-    # Let's assume for now that retry logic is handled within each connector's specific requests.
-    # Or, we can add a protected _make_request method here later if many connectors use raw requests.

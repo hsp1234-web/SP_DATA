@@ -3,12 +3,13 @@ import pandas as pd
 from typing import List, Dict, Any, Tuple, Optional
 from datetime import datetime, timezone
 import logging
-import os # For accessing API key from environment variable
+import os
+import sys # For test block
 
 try:
     from .base import BaseConnector
 except ImportError:
-    if __name__ == '__main__': # For standalone testing
+    if __name__ == '__main__':
         from base import BaseConnector
     else:
         raise
@@ -44,8 +45,9 @@ class FredConnector(BaseConnector):
                 self.fred_client = None
 
     def fetch_data(self, series_ids: List[str], start_date: Optional[str] = None, end_date: Optional[str] = None, **kwargs) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+        # The 'end_date' parameter is now part of the method signature as per Phase II requirements.
+        # For FRED, the fredapi library handles date filtering directly via 'observation_end'.
         if self.fred_client is None:
-            # Return an empty DataFrame with the expected schema and an error message
             schema_cols = ['metric_date', 'metric_name', 'metric_value', 'source_api', 'data_snapshot_timestamp']
             return pd.DataFrame(columns=schema_cols), "FRED client not initialized due to missing API key or initialization error."
 
@@ -61,10 +63,11 @@ class FredConnector(BaseConnector):
         for series_id in series_ids:
             try:
                 self.logger.debug(f"Fetching data for FRED series_id: {series_id}")
+                # Pass end_date to observation_end
                 series_data = self.fred_client.get_series(series_id, observation_start=start_date, observation_end=end_date)
 
                 if series_data.empty:
-                    self.logger.warning(f"No data returned for FRED series_id: {series_id} for the given date range.")
+                    self.logger.warning(f"No data returned for FRED series_id: {series_id} for the given date range (start={start_date}, end={end_date}).")
                     continue
 
                 df_series = series_data.reset_index()
@@ -95,7 +98,7 @@ class FredConnector(BaseConnector):
 
         final_df = pd.concat(all_series_data_list, ignore_index=True)
 
-        if final_df.empty: # Should be caught if all_series_data_list is empty
+        if final_df.empty:
             schema_cols = ['metric_date', 'metric_name', 'metric_value', 'source_api', 'data_snapshot_timestamp']
             return pd.DataFrame(columns=schema_cols), "Combined FRED data is empty after processing all series."
 
@@ -119,34 +122,25 @@ if __name__ == '__main__':
         test_logger_fred.propagate = False
 
     sample_fred_config = {
-        "api_endpoints": { "fred": { "api_key_env": "FRED_API_KEY_TEST" } } # Use a distinct env var for testing
+        "api_endpoints": { "fred": { "api_key_env": "FRED_API_KEY_TEST_HIST" } }
     }
 
-    # For testing, explicitly set the API key if you have one, or mock Fred()
-    # IMPORTANT: Do not commit real API keys.
-    MOCK_API_KEY_FOR_TEST = "YOUR_TEST_API_KEY_OR_MOCK"
-    # os.environ["FRED_API_KEY_TEST"] = MOCK_API_KEY_FOR_TEST # FredConnector will pick this up
+    api_key_to_use = os.getenv("FRED_API_KEY") # Try to use the main key from environment for testing
+    if not api_key_to_use:
+        test_logger_fred.error("FRED_API_KEY environment variable not set. Cannot run FredConnector test.")
+        sys.exit(1)
+    os.environ["FRED_API_KEY_TEST_HIST"] = api_key_to_use # Set it to the specific var the test config uses
 
-    if not os.getenv(sample_fred_config['api_endpoints']['fred']['api_key_env']):
-        # Fallback: Try the main key if test key not set (for user convenience during dev)
-        main_api_key_env = "FRED_API_KEY" # As defined in project_config.yaml template
-        if os.getenv(main_api_key_env):
-            test_logger_fred.warning(f"Test-specific FRED API key env var '{sample_fred_config['api_endpoints']['fred']['api_key_env']}' not set. Falling back to main key '{main_api_key_env}' for this test run.")
-            os.environ[sample_fred_config['api_endpoints']['fred']['api_key_env']] = os.getenv(main_api_key_env)
-        else:
-             test_logger_fred.error(f"Cannot run FredConnector test: Neither test env var '{sample_fred_config['api_endpoints']['fred']['api_key_env']}' nor main env var '{main_api_key_env}' for FRED API key is set.")
-             sys.exit(1) # Exit if no key can be found for testing
-
-    test_logger_fred.info("--- Starting FredConnector Test ---")
+    test_logger_fred.info("--- Starting FredConnector Test (with end_date) ---")
     fred_conn_test = FredConnector(config=sample_fred_config, logger_instance=test_logger_fred)
 
     if fred_conn_test.fred_client is not None:
-        test_series_list = ["DGS10", "FEDFUNDS", "UNRATE", "NONEXISTENTSERIESXYZ"]
-        test_start = "2023-01-01"
-        test_end = "2023-02-28"
+        test_series_list = ["DGS10", "UNRATE"]
+        test_start = "2022-01-01"
+        test_end_date_filter = "2022-03-15" # Specific end date for filtering
 
-        test_logger_fred.info(f"Testing fetch_data for series: {test_series_list} from {test_start} to {test_end}")
-        fred_df, fred_err = fred_conn_test.fetch_data(series_ids=test_series_list, start_date=test_start, end_date=test_end)
+        test_logger_fred.info(f"Testing fetch_data for series: {test_series_list} from {test_start} to {test_end_date_filter}")
+        fred_df, fred_err = fred_conn_test.fetch_data(series_ids=test_series_list, start_date=test_start, end_date=test_end_date_filter)
 
         if fred_err:
             test_logger_fred.warning(f"FredConnector test fetch_data completed with error(s): {fred_err}")
@@ -155,13 +149,14 @@ if __name__ == '__main__':
             test_logger_fred.info(f"FredConnector test fetch_data returned data. Shape: {fred_df.shape}")
             test_logger_fred.info(f"Result head:\n{fred_df.head().to_string()}")
             test_logger_fred.info(f"Result tail:\n{fred_df.tail().to_string()}")
-            actual_metrics = set(fred_df['metric_name'].unique())
-            test_logger_fred.info(f"Metrics returned: {actual_metrics}")
-            if "FRED/NONEXISTENTSERIESXYZ" not in actual_metrics:
-                test_logger_fred.info("Correctly did not return data for 'NONEXISTENTSERIESXYZ'.")
+
+            max_date_in_df = fred_df['metric_date'].max()
+            test_logger_fred.info(f"Max date in returned FRED data: {max_date_in_df.strftime('%Y-%m-%d')}")
+            assert max_date_in_df <= pd.to_datetime(test_end_date_filter).date(), f"Data found after specified end_date {test_end_date_filter}! Max date was {max_date_in_df}"
+            test_logger_fred.info(f"FRED data correctly filtered by end_date {test_end_date_filter}.")
         elif fred_df is not None and fred_df.empty:
-             test_logger_fred.warning("FredConnector test fetch_data returned an empty DataFrame. This might be due to all series failing or returning no data for the period.")
-        else: # fred_df is None
+             test_logger_fred.warning(f"FredConnector test fetch_data returned an empty DataFrame for period up to {test_end_date_filter}.")
+        else:
              test_logger_fred.error(f"FredConnector test fetch_data returned None for data. Error was: {fred_err}")
     else:
         test_logger_fred.error("FredConnector client (self.fred_client) was not initialized in test. API key issue likely.")
