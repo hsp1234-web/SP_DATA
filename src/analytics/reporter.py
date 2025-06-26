@@ -11,6 +11,7 @@ import argparse
 import json
 from collections import Counter
 from datetime import datetime
+from typing import Optional, List
 
 # Configure logger for this module
 logger = logging.getLogger(__name__)
@@ -30,10 +31,10 @@ class InsightReporter:
         if db_path_override:
             self.db_path = db_path_override
         else:
-            # Determine project root from config_path's parent directory (assuming config is in src/configs)
-            project_root = config_path.parent.parent
+            # The database path in config is relative to the project root.
+            # The script is expected to be run from the project root.
             db_relative_path = self.config.get('database', {}).get('path', 'data/financial_data.duckdb')
-            self.db_path = project_root / db_relative_path
+            self.db_path = Path(db_relative_path) # Assumes current working directory is project root
 
         logger.info(f"InsightReporter initialized. Using database: {self.db_path.resolve()}")
         self.conn = None
@@ -47,21 +48,23 @@ class InsightReporter:
             raise
 
     def _connect_db(self):
-        if self.conn is None or self.conn.isclosed(): # Check if conn is None or already closed
+        if self.conn is None: # If no connection object exists, create one
             try:
                 logger.info(f"Connecting to database: {self.db_path}")
                 self.conn = duckdb.connect(database=str(self.db_path), read_only=True)
             except Exception as e:
                 logger.error(f"Failed to connect to database {self.db_path}: {e}")
                 raise
+        # If self.conn exists, we assume it's open. DuckDB will error on operations if closed.
         else:
-            logger.info("Database connection already active.")
+            logger.info("Database connection object exists.")
 
 
     def _close_db(self):
         if self.conn:
             self.conn.close()
-            logger.info("Database connection closed.")
+            self.conn = None # Set to None after closing
+            logger.info("Database connection closed and object set to None.")
 
     def _fetch_data(self, query: str) -> pd.DataFrame:
         self._connect_db()
@@ -276,4 +279,3 @@ def main():
 if __name__ == "__main__":
     # Example: python src/analytics/reporter.py --output-dir reports_output
     main()
-```
