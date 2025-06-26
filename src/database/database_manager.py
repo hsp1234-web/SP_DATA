@@ -119,27 +119,6 @@ class DatabaseManager:
                 );
             """)
             self.logger.info("Table 'fact_stock_price' checked/created.")
-
-            # Schema for log_ai_decision
-            # decision_date: DATE (Primary Key)
-            # stress_index_value: DOUBLE
-            # strategy_summary: VARCHAR
-            # key_factors: VARCHAR (storing JSON string of list of strings)
-            # confidence_score: DOUBLE
-            # raw_ai_response: VARCHAR (storing the full raw JSON response from AI)
-            # decision_timestamp: TIMESTAMP (when the decision was logged)
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS log_ai_decision (
-                    decision_date DATE PRIMARY KEY,
-                    stress_index_value DOUBLE,
-                    strategy_summary VARCHAR,
-                    key_factors VARCHAR,
-                    confidence_score DOUBLE,
-                    raw_ai_response VARCHAR,
-                    decision_timestamp TIMESTAMP
-                );
-            """)
-            self.logger.info("Table 'log_ai_decision' checked/created.")
         except Exception as e:
             self.logger.error(f"Error creating tables: {e}", exc_info=True)
             # Depending on severity, might want to raise this

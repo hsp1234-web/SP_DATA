@@ -34,9 +34,13 @@ class InsightReporter:
             # The database path in config is relative to the project root.
             # The script is expected to be run from the project root.
             db_relative_path = self.config.get('database', {}).get('path', 'data/financial_data.duckdb')
-            self.db_path = Path(db_relative_path) # Assumes current working directory is project root
+            # Ensure this path is resolved relative to the project root, not just CWD of reporter.py if it's different.
+            # Assuming reporter.py is run from project root, Path(db_relative_path) is fine.
+            # For robustness, one might pass project_root to InsightReporter.
+            # For now, we rely on CWD = project_root.
+            self.db_path = Path(db_relative_path).resolve() # Resolve to get absolute path immediately
 
-        logger.info(f"InsightReporter initialized. Using database: {self.db_path.resolve()}")
+        logger.info(f"InsightReporter initialized. Using ABSOLUTE database path: {self.db_path}") # Log absolute path
         self.conn = None
 
     def _load_config(self, config_path: Path) -> dict:
@@ -192,6 +196,23 @@ class InsightReporter:
     def generate_report(self, output_dir: Path = Path("."), report_filename_base: str = "ai_insights_report"):
         """Generates an HTML report with various insight plots."""
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        # --- Debug: Query log_ai_decision table ---
+        self._connect_db() # Ensure connection
+        if self.conn:
+            try:
+                debug_query = "SELECT COUNT(*) as count, SUM(CASE WHEN stress_index_value IS NOT NULL THEN 1 ELSE 0 END) as non_null_stress, SUM(CASE WHEN strategy_summary != 'AI_CALL_SKIPPED_OR_FAILED' THEN 1 ELSE 0 END) as valid_strategies FROM log_ai_decision;"
+                debug_df = self.conn.execute(debug_query).fetchdf()
+                logger.info(f"DEBUG log_ai_decision stats: {debug_df.to_dict('records')}")
+
+                debug_sample_query = "SELECT decision_date, stress_index_value, strategy_summary FROM log_ai_decision LIMIT 5;"
+                debug_sample_df = self.conn.execute(debug_sample_query).fetchdf()
+                logger.info(f"DEBUG log_ai_decision sample:\n{debug_sample_df}")
+
+            except Exception as e_debug:
+                logger.error(f"DEBUG query failed: {e_debug}")
+            # self._close_db() # Don't close yet, other functions need it. Will be closed at end of generate_report
+        # --- End Debug ---
 
         stress_data = self.get_stress_index_data()
         ai_decisions = self.get_ai_decisions()

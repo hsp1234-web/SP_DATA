@@ -111,6 +111,28 @@ requests_config:
   timeout: 30 # Default timeout for most API calls
   download_timeout: 120 # Longer timeout for file downloads (like NYFed Excel)
 
+# Configuration for AI Service (RemoteAIAgent)
+ai_service:
+  # API key for the AI service. Replace "YOUR_API_KEY_HERE" with the actual key.
+  # If left as "YOUR_API_KEY_HERE" or empty, AI decision making will be skipped.
+  api_key: "YOUR_API_KEY_HERE"
+
+  # API endpoint for the AI service
+  # Example for Anthropic Claude API:
+  api_endpoint: "https://api.anthropic.com/v1/messages"
+  # Example for OpenAI API:
+  # api_endpoint: "https://api.openai.com/v1/chat/completions"
+
+  # Default model to use if not overridden in the call
+  # Example for Anthropic Claude:
+  default_model: "claude-3-opus-20240229"
+  # Example for OpenAI GPT-4 Turbo:
+  # default_model: "gpt-4-turbo-preview"
+
+  # API call settings
+  max_retries: 3
+  retry_delay_seconds: 5 # Delay between retries for API calls
+  api_call_delay_seconds: 1.0 # Minimum delay between consecutive API calls (respect rate limits)
 EOF
 
 echo "Creating requirements.txt file..."
@@ -123,6 +145,7 @@ fredapi
 yfinance
 requests
 openpyxl
+beautifulsoup4
 # FinMind # Removed as it's not currently used
 tqdm
 # Add any other specific versions if necessary, e.g., pandas==2.0.3
@@ -189,11 +212,17 @@ import requests
 import pandas as pd
 from typing import Dict, Any, Tuple, Optional, List
 from io import BytesIO
+import requests
+import pandas as pd
+from typing import Dict, Any, Tuple, Optional, List
+from io import BytesIO
 import logging
 from datetime import datetime, timezone
 import sys
 import time
 import random
+from bs4 import BeautifulSoup # Added for HTML parsing
+from urllib.parse import urljoin # Added for joining relative URLs
 
 try:
     from .base import BaseConnector
@@ -228,10 +257,14 @@ class NYFedConnector(BaseConnector):
         if not self.recipes:
             self.logger.warning("No recipes for NYFed formats (nyfed_format_recipes).")
 
-    def _download_excel_with_retries(self, url:str) -> Optional[BytesIO]:
+    def _download_excel_with_retries(self, url_config: Dict[str, str]) -> Optional[BytesIO]: # Changed signature
+        url = url_config.get('url') # Get URL from url_config
+        if not url:
+            self.logger.error("URL not found in url_config for _download_excel_with_retries.")
+            return None
+
         retries = self.requests_config.get('max_retries', 3)
         base_backoff = self.requests_config.get('base_backoff_seconds', 1)
-        # Use specific download_timeout from requests_config if available, else general timeout
         timeout_sec = self.requests_config.get('download_timeout', self.requests_config.get('timeout', 60))
 
         headers = {
@@ -239,22 +272,90 @@ class NYFedConnector(BaseConnector):
         }
         for attempt in range(retries):
             try:
-                self.logger.debug(f"Attempt {attempt + 1}/{retries} to download NYFed Excel from {url}")
-                response = requests.get(url, timeout=timeout_sec, headers=headers)
-                response.raise_for_status()
-                content_type = response.headers.get('Content-Type', '')
-                self.logger.info(f"Successfully downloaded from NYFed URL {url} (status {response.status_code}). Content-Type: {content_type}. Size: {len(response.content)} bytes.")
-                # Log the first 100 bytes to check file signature
-                self.logger.debug(f"NYFed downloaded content head (first 100 bytes): {response.content[:100]}")
+                self.logger.debug(f"Attempt {attempt + 1}/{retries} to access NYFed resource page: {url}")
+                page_response = requests.get(url, timeout=timeout_sec, headers=headers)
+                self.logger.info(f"NYFed Page URL: {url}, Attempt: {attempt + 1}, Status: {page_response.status_code}, Content-Type: {page_response.headers.get('Content-Type')}")
+                page_response.raise_for_status()
 
-                # Basic check for Excel content type
-                if not any(ct in content_type.lower() for ct in ['excel', 'spreadsheetml', 'officedocument']):
-                    self.logger.error(f"Downloaded content from {url} does not appear to be an Excel file based on Content-Type: '{content_type}'. Skipping.")
-                    return None # Treat as failure if content type is wrong
+                # If the page itself is HTML, try to find an Excel link
+                if 'text/html' in page_response.headers.get('Content-Type', '').lower():
+                    self.logger.info(f"Content from {url} is HTML. Attempting to find Excel link...")
+                    soup = BeautifulSoup(page_response.content, 'html.parser')
+                    file_pattern_hint = url_config.get('file_pattern', '') # Now uses passed url_config
+                    year_hint = ''.join(filter(str.isdigit, file_pattern_hint))
 
-                return BytesIO(response.content)
+                    excel_link_found = None
+                    # Try a few patterns for finding the link
+                    possible_links = soup.find_all('a', href=True)
+                    self.logger.debug(f"Found {len(possible_links)} links on page {url}. Checking for Excel files related to '{file_pattern_hint}'.")
+
+                    for link_tag in possible_links:
+                        href = link_tag['href']
+                        link_text = link_tag.get_text(strip=True)
+                        # Prioritize links containing the file_pattern directly or parts of it
+                        if file_pattern_hint and file_pattern_hint.lower() in href.lower():
+                             excel_link_found = href
+                             self.logger.info(f"Found strong match for Excel link by file_pattern in href: {excel_link_found} for {url}")
+                             break
+                        if year_hint and year_hint in href.lower() and '.xlsx' in href.lower():
+                             excel_link_found = href
+                             self.logger.info(f"Found year match for Excel link in href: {excel_link_found} for {url}")
+                             break
+                        if 'prideal' in href.lower() and '.xlsx' in href.lower(): # General fallback
+                             excel_link_found = href
+                             self.logger.info(f"Found general 'prideal' Excel link in href: {excel_link_found} for {url}")
+                             break
+                        if link_text and file_pattern_hint and file_pattern_hint.lower() in link_text.lower() and '.xlsx' in href.lower():
+                            excel_link_found = href
+                            self.logger.info(f"Found Excel link by text match '{link_text}': {excel_link_found} for {url}")
+                            break
+
+                    if excel_link_found:
+                        # Ensure the link is absolute
+                        if not excel_link_found.startswith('http'):
+                            from urllib.parse import urljoin
+                            excel_download_url = urljoin(url, excel_link_found) # url is the base page URL
+                        else:
+                            excel_download_url = excel_link_found
+
+                        self.logger.info(f"Attempting to download actual Excel file from scraped URL: {excel_download_url}")
+                        response = requests.get(excel_download_url, timeout=timeout_sec, headers=headers)
+                        self.logger.info(f"Scraped Excel URL: {excel_download_url}, Status: {response.status_code}, Content-Type: {response.headers.get('Content-Type')}, Size: {len(response.content)} bytes")
+                        response.raise_for_status()
+                        # Now check content type of the actual downloaded file
+                        content_type = response.headers.get('Content-Type', '').lower()
+                        if any(ct in content_type for ct in ['excel', 'spreadsheetml', 'officedocument', 'application/octet-stream']):
+                            self.logger.info(f"Successfully downloaded and verified Excel from scraped link: {excel_download_url}")
+                            return BytesIO(response.content)
+                        else:
+                            self.logger.error(f"Scraped link {excel_download_url} provided non-Excel Content-Type: '{content_type}'. Skipping.")
+                            return None
+                    else:
+                        self.logger.error(f"Could not find a suitable Excel download link on HTML page: {url} for pattern '{file_pattern_hint}'.")
+                        self.logger.debug(f"Page content sample (first 1000 bytes of HTML from {url}): {page_response.content[:1000].decode('utf-8', errors='replace')}")
+                        return None # No link found
+
+                # If original URL was not HTML, or if it was HTML but logic above failed to return:
+                # This part handles direct downloads if the URL itself is supposed to be an Excel file
+                # (original logic before scraping attempt)
+                # For safety, let's assume if it wasn't HTML and wasn't handled, it might be a direct file.
+                # This might be redundant if the HTML path is robust.
+                # However, the previous logic had a direct check for excel content type.
+                # Let's ensure if it's not HTML, we still check its content type directly.
+                elif any(ct in page_response.headers.get('Content-Type', '').lower() for ct in ['excel', 'spreadsheetml', 'officedocument', 'application/octet-stream']):
+                    self.logger.info(f"URL {url} seems to be a direct Excel link (Content-Type: {page_response.headers.get('Content-Type', '')}). Using its content.")
+                    return BytesIO(page_response.content)
+                else: # Neither HTML with a good link, nor a direct Excel link by Content-Type
+                    self.logger.error(f"Content from {url} is not HTML with a usable Excel link, nor a direct Excel file. Content-Type: {page_response.headers.get('Content-Type', '')}. Skipping.")
+                    self.logger.debug(f"Content sample (first 500 bytes from {url}): {page_response.content[:500].decode('utf-8', errors='replace') if page_response.content else 'No content'}")
+                    return None
+
             except requests.exceptions.HTTPError as e:
-                self.logger.warning(f"HTTP error on attempt {attempt + 1}/{retries} for NYFed URL '{url}': {e.response.status_code if e.response else 'N/A'} - {e.response.text[:100] if e.response else 'N/A'}")
+                # This error is for the page_response or the subsequent excel_response
+                response_for_error_log = e.response # Could be page_response or the actual excel download response
+                self.logger.warning(f"HTTP error on attempt {attempt + 1}/{retries} for NYFed process (URL: {url}): {response_for_error_log.status_code if response_for_error_log else 'N/A'} - {response_for_error_log.text[:200] if response_for_error_log and response_for_error_log.text else 'N/A'}")
+                if response_for_error_log is not None:
+                    self.logger.warning(f"Headers for error response (URL: {url}): {response_for_error_log.headers}")
                 if e.response is not None and 400 <= e.response.status_code < 500 and e.response.status_code != 429:
                     self.logger.error(f"Client error {e.response.status_code} for NYFed URL '{url}', not retrying this file.")
                     return None
@@ -291,7 +392,7 @@ class NYFedConnector(BaseConnector):
                 continue
 
             self.logger.info(f"Processing NYFed file: {file_log_name} from URL: {url} (format: {format_type})")
-            excel_file_content = self._download_excel_with_retries(url)
+            excel_file_content = self._download_excel_with_retries(file_info) # Pass the whole file_info dict
             if not excel_file_content:
                 continue
 
@@ -702,10 +803,24 @@ class DatabaseManager:
         """關閉資料庫連接。"""
         if self.conn is not None:
             try:
+                self.logger.info(f"Attempting to CHECKPOINT database before disconnecting: {self.db_file.resolve()}")
+                self.conn.execute("CHECKPOINT;")
+                self.logger.info(f"Successfully CHECKPOINTED database: {self.db_file.resolve()}")
+
+                # Perform a dummy read operation
+                try:
+                    count_after_checkpoint = self.conn.execute("SELECT COUNT(*) FROM log_ai_decision;").fetchone()
+                    if count_after_checkpoint:
+                        self.logger.info(f"Dummy read from log_ai_decision after CHECKPOINT returned count: {count_after_checkpoint[0]}")
+                    else:
+                        self.logger.warning("Dummy read from log_ai_decision after CHECKPOINT returned no result.")
+                except Exception as e_read:
+                    self.logger.error(f"Error during dummy read after CHECKPOINT: {e_read}", exc_info=True)
+
                 self.conn.close()
                 self.logger.info(f"Disconnected from DuckDB database: {self.db_file.resolve()}")
             except Exception as e:
-                self.logger.error(f"Error while closing DuckDB connection: {e}", exc_info=True)
+                self.logger.error(f"Error during CHECKPOINT or closing DuckDB connection: {e}", exc_info=True)
         else:
             self.logger.info("Database connection already None or not established.")
         self.conn = None
@@ -760,6 +875,25 @@ class DatabaseManager:
                 );
             """)
             self.logger.info("Table 'fact_stock_price' checked/created.")
+
+            # Schema for log_ai_decision
+            self.conn.execute("""
+                CREATE TABLE log_ai_decision (
+                    decision_id VARCHAR DEFAULT uuid(), -- Auto-generated unique ID
+                    decision_date DATE,
+                    stress_index_value DOUBLE,
+                    stress_index_trend VARCHAR,
+                    strategy_summary VARCHAR,
+                    key_factors VARCHAR, -- Store as JSON string if it's a list
+                    confidence_score DOUBLE,
+                    raw_ai_response TEXT, -- Can store larger text like full JSON or error message
+                    briefing_json TEXT, -- Store the market_snapshot JSON used for the decision
+                    decision_timestamp TIMESTAMP DEFAULT current_timestamp,
+                    PRIMARY KEY (decision_id),
+                    UNIQUE (decision_date) -- Assuming one decision per date for this system
+                );
+            """)
+            self.logger.info("Table 'log_ai_decision' checked/created.")
         except Exception as e:
             self.logger.error(f"Error creating tables: {e}", exc_info=True)
             # Depending on severity, might want to raise this
@@ -827,6 +961,8 @@ class DatabaseManager:
             self.conn.execute(sql) # This should be at the same indentation level as the if/else that defines sql
             self.conn.unregister(temp_table_name) # Clean up temporary table
             self.logger.info(f"Successfully inserted/replaced {len(df)} rows into {table_name}.")
+            self.conn.execute("CHECKPOINT;") # Force flush to disk
+            self.logger.info(f"Executed CHECKPOINT after upsert into {table_name}.")
             return True
         except Exception as e:
             self.logger.error(f"Error during bulk insert/replace into {table_name}: {e}", exc_info=True)
@@ -1877,6 +2013,7 @@ try:
     from connectors.yfinance_connector import YFinanceConnector
     from database.database_manager import DatabaseManager
     from engine.indicator_engine import IndicatorEngine
+    from ai_agent import RemoteAIAgent, AIDecisionModel # Import AI classes
 
     from scripts.initialize_global_log import log_message, get_taipei_time, LOG_FILE_PATH as GLOBAL_LOG_FILE_PATH_FROM_MODULE, initialize_log_file
 
@@ -1997,11 +2134,15 @@ def main():
         nyfed_logger = logging.getLogger("project_logger.NYFedConnector")
         yf_logger = logging.getLogger("project_logger.YFinanceConnector")
         engine_logger = logging.getLogger("project_logger.IndicatorEngine")
+        ai_agent_logger = logging.getLogger("project_logger.RemoteAIAgent") # Logger for AI Agent
 
         # Initialize DatabaseManager
         # Pass PROJECT_ROOT so DatabaseManager can resolve relative db path correctly
         db_manager = DatabaseManager(config, logger_instance=db_logger, project_root_dir=PROJECT_ROOT)
         db_manager.connect() # This will also create tables if they don't exist
+
+        # Initialize AI Agent
+        ai_agent = RemoteAIAgent(config=config, logger_instance=ai_agent_logger)
 
         data_fetch_status = {'fred': False, 'nyfed': False, 'yfinance_move': False}
         # Define unique columns for upsert operations
@@ -2170,6 +2311,103 @@ def main():
                 # Also log it to the file
                 global_log(json.dumps(market_briefing_output, indent=2, ensure_ascii=False), "INFO", logger_name="MainApp.BriefingOutput")
 
+                # --- AI Decision Making Loop ---
+                global_log("\n--- 階段 4: AI 歷史決策生成 ---", "INFO", logger_name="MainApp.HistoricalLoop")
+                if stress_index_df is not None and not stress_index_df.empty:
+                    if not ai_agent.is_configured:
+                        global_log("AI Agent not configured (API key or endpoint missing/placeholder). AI decisions will be logged as SKIPPED/FAILED.", "WARNING", logger_name="MainApp.HistoricalLoop")
+
+                    num_historical_dates = len(stress_index_df.index.unique())
+                    global_log(f"Starting AI decision generation process for {num_historical_dates} historical dates.", "INFO", logger_name="MainApp.HistoricalLoop")
+
+                    ai_decision_log_entries = []
+                    for decision_date_dt in stress_index_df.index:
+                        decision_date_str = decision_date_dt.strftime('%Y-%m-%d')
+                        current_stress_value = stress_index_df.loc[decision_date_dt, 'DealerStressIndex']
+
+                        current_stress_trend = "N/A"
+                        date_loc = stress_index_df.index.get_loc(decision_date_dt)
+                        if date_loc > 0:
+                            prev_stress_value = stress_index_df.iloc[date_loc - 1]['DealerStressIndex']
+                            change = current_stress_value - prev_stress_value
+                            if pd.notna(change):
+                                current_stress_trend = "上升" if change > 0.1 else ("下降" if change < -0.1 else "穩定")
+
+                        historical_snapshot_data = None
+                        if engine_instance.df_prepared is not None and decision_date_dt in engine_instance.df_prepared.index:
+                            historical_snapshot_data = engine_instance.df_prepared.loc[decision_date_dt]
+
+                        historical_market_snapshot_for_ai = {
+                            "briefing_date": decision_date_str,
+                            "dealer_stress_index": {
+                                "current_value_description": f"{current_stress_value:.2f}",
+                                "trend_approximation": current_stress_trend
+                            },
+                            "key_financial_components_latest": [
+                                {"component_name": "MOVE Index (Bond Mkt Volatility)", "value_string": get_formatted_value(historical_snapshot_data, '^MOVE')},
+                                {"component_name": "10Y-2Y Treasury Spread", "value_string": f"{(historical_snapshot_data['spread_10y2y'] * 100):.2f} bps" if historical_snapshot_data is not None and 'spread_10y2y' in historical_snapshot_data and pd.notna(historical_snapshot_data['spread_10y2y']) else "N/A"},
+                                {"component_name": "Primary Dealer Net Positions (Millions USD)", "value_string": get_formatted_value(historical_snapshot_data, 'NYFED/PRIMARY_DEALER_NET_POSITION', value_format="{:,.0f}")}
+                            ],
+                             "broader_market_context_latest": {
+                                "vix_index (Equity Mkt Volatility)": get_formatted_value(historical_snapshot_data, 'FRED/VIXCLS'),
+                                "sofr_deviation_from_ma": get_formatted_value(historical_snapshot_data, 'FRED/SOFR_Dev')
+                            }
+                        }
+                        briefing_json_for_log = json.dumps(historical_market_snapshot_for_ai)
+
+                        # ai_agent.get_decision() will return None if not configured or if API call fails
+                        ai_decision_model = ai_agent.get_decision(
+                            decision_date=decision_date_str,
+                            market_snapshot=historical_market_snapshot_for_ai,
+                            stress_index_value=current_stress_value,
+                            stress_index_trend=current_stress_trend
+                        )
+
+                        log_entry = {
+                            "decision_date": decision_date_str,
+                            "stress_index_value": current_stress_value if pd.notna(current_stress_value) else None,
+                            "stress_index_trend": current_stress_trend,
+                            "briefing_json": briefing_json_for_log
+                        }
+
+                        if ai_decision_model:
+                            log_entry.update({
+                                "strategy_summary": ai_decision_model.strategy_summary,
+                                "key_factors": json.dumps(ai_decision_model.key_factors, ensure_ascii=False),
+                                "confidence_score": ai_decision_model.confidence_score,
+                                "raw_ai_response": ai_decision_model.raw_ai_response
+                            })
+                            global_log(f"AI decision for {decision_date_str}: Strategy='{ai_decision_model.strategy_summary}', Confidence={ai_decision_model.confidence_score:.2f}", "INFO", logger_name="MainApp.AIDecision")
+                        else:
+                            # This block executes if get_decision returns None (agent not configured or error)
+                            log_entry.update({
+                                "strategy_summary": "AI_CALL_SKIPPED_OR_FAILED",
+                                "key_factors": json.dumps(["AI agent not configured or call failed."]), # More generic message
+                                "confidence_score": 0.0,
+                                "raw_ai_response": "N/A - Check AI Agent logs for details (e.g., not configured, API error)."
+                            })
+                            global_log(f"AI decision skipped or failed for {decision_date_str}. Check AI Agent logs.", "WARNING", logger_name="MainApp.AIDecision")
+
+                        ai_decision_log_entries.append(log_entry)
+
+                    if ai_decision_log_entries:
+                        ai_log_df = pd.DataFrame(ai_decision_log_entries)
+                        expected_db_cols = ['decision_date', 'stress_index_value', 'stress_index_trend',
+                                            'strategy_summary', 'key_factors', 'confidence_score',
+                                            'raw_ai_response', 'briefing_json']
+                        for col in expected_db_cols:
+                            if col not in ai_log_df.columns:
+                                ai_log_df[col] = None
+                        db_manager.bulk_insert_or_replace('log_ai_decision', ai_log_df, unique_cols=['decision_date'])
+                        global_log(f"Logged {len(ai_log_df)} AI decision entries to database.", "INFO", logger_name="MainApp.HistoricalLoop")
+
+                else: # stress_index_df is None or empty
+                    global_log("Stress index data is not available. Skipping AI decision loop.", "WARNING", logger_name="MainApp.HistoricalLoop")
+
+                total_decisions_attempted = len(stress_index_df.index.unique()) if stress_index_df is not None else 0
+                global_log(f"Finished historical AI decision loop. Total decision points processed: {total_decisions_attempted}", "INFO", logger_name="MainApp.HistoricalLoop")
+
+
     except FileNotFoundError as e_fnf: # Specifically for config loading
         err_msg_fnf = f"CRITICAL FAILURE: Configuration file not found: {e_fnf}. Application cannot start."
         print(err_msg_fnf) # Print to console as logger might not be fully up
@@ -2251,6 +2489,324 @@ EOF
 cat <<EOF > src/scripts/__init__.py
 # This file makes 'src/scripts' a package.
 from .initialize_global_log import initialize_log_file, log_message, get_taipei_time
+EOF
+
+echo "Creating src/ai_agent.py..."
+cat <<EOF > src/ai_agent.py
+import requests
+import json
+import logging
+import time
+import os
+from typing import Dict, Any, Optional, Tuple, List # Added List
+from pydantic import BaseModel, ValidationError, field_validator # Assuming pydantic is used for models
+
+# Logger setup
+logger = logging.getLogger(f"project_logger.{__name__}")
+if not logger.handlers and not logging.getLogger().hasHandlers():
+    logger.addHandler(logging.NullHandler())
+    logger.debug(f"Logger for {__name__} (ai_agent module) configured with NullHandler.")
+
+class AIDecisionModel(BaseModel):
+    """Pydantic model for the AI's decision output."""
+    decision_date: str # YYYY-MM-DD
+    strategy_summary: str # e.g., "積極買入美國長天期公債"
+    key_factors: List[str]
+    confidence_score: float # 0.0 to 1.0
+    raw_ai_response: Optional[str] = None # Store the full raw response for audit/debug
+
+    @field_validator('decision_date')
+    def validate_date_format(cls, value):
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError("decision_date must be in YYYY-MM-DD format")
+        return value
+
+    @field_validator('confidence_score')
+    def validate_confidence_score(cls, value):
+        if not (0.0 <= value <= 1.0):
+            raise ValueError("confidence_score must be between 0.0 and 1.0")
+        return value
+
+class RemoteAIAgent:
+    """Handles communication with a remote AI service for decision making."""
+
+    def __init__(self, config: Dict[str, Any], logger_instance: Optional[logging.Logger] = None):
+        if logger_instance:
+            self.logger = logger_instance
+        else:
+            self.logger = logging.getLogger(f"project_logger.{self.__class__.__name__}")
+            if not self.logger.handlers and not logging.getLogger().hasHandlers():
+                 self.logger.addHandler(logging.NullHandler())
+
+        self.ai_config = config.get('ai_service', {})
+        self.api_key = self.ai_config.get('api_key', "YOUR_API_KEY_HERE")
+        self.api_endpoint = self.ai_config.get('api_endpoint')
+        self.default_model = self.ai_config.get('default_model')
+        self.max_retries = self.ai_config.get('max_retries', 3)
+        self.retry_delay = self.ai_config.get('retry_delay_seconds', 5)
+        self.api_call_delay = self.ai_config.get('api_call_delay_seconds', 1.0) # Not used in get_decision yet, but good for future
+
+        self.is_configured = True
+        if not self.api_key or self.api_key == "YOUR_API_KEY_HERE" or not self.api_endpoint:
+            self.logger.warning(
+                "AI Agent is not fully configured. API key or endpoint is missing or placeholder. "
+                "AI decision making will be skipped. "
+                "【待處理：AI API 金鑰未在 project_config.yaml 中提供或端點未設定】"
+            )
+            self.is_configured = False
+        else:
+            self.logger.info(f"RemoteAIAgent initialized. Endpoint: {self.api_endpoint}, Model: {self.default_model}")
+
+    def get_decision_prompt_template(self) -> str:
+        # This is a simplified prompt template.
+        # In a real scenario, this would be more complex and configurable.
+        return """
+        基於以下市場數據和壓力指標，請為日期 {decision_date} 提供一個美國公債市場的交易策略。
+        你的回答必須嚴格遵循以下 JSON 格式，不得包含任何額外的解釋或文字。
+
+        市場數據摘要:
+        {market_data_summary}
+
+        交易商壓力指標 (Dealer Stress Index): {stress_index_value:.2f} (越高越緊張)
+        壓力指標趨勢: {stress_index_trend}
+
+        請輸出 JSON 格式的決策:
+        {{
+          "decision_date": "{decision_date}",
+          "strategy_summary": "你的策略摘要 (例如：買入/賣出/持有，短期/中期/長期，特定券種)",
+          "key_factors": ["影響你決策的1-3個最關鍵因素"],
+          "confidence_score": 0.0到1.0之間你的信心評分
+        }}
+        """
+
+    def format_market_data_for_prompt(self, market_snapshot: Dict[str, Any]) -> str:
+        """Formats the market snapshot into a string for the AI prompt."""
+        # market_snapshot is expected to be a dictionary like the one generated for briefing
+        # For simplicity, we'll just use a few key items.
+        # A more robust implementation would carefully select and format more data.
+        if not market_snapshot: return "市場數據不可用。"
+
+        sds_val = market_snapshot.get('dealer_stress_index', {}).get('current_value_description', "N/A")
+        key_components_str = "; ".join([f"{c['component_name']}: {c['value_string']}" for c in market_snapshot.get('key_financial_components_latest', [])])
+
+        return (
+            f"- 交易商壓力指數: {sds_val}\n"
+            f"- 關鍵金融組件: {key_components_str}\n"
+            f"- 更廣泛市場背景: VIX={market_snapshot.get('broader_market_context_latest',{}).get('vix_index (Equity Mkt Volatility)', 'N/A')}, "
+            f"SOFR離差={market_snapshot.get('broader_market_context_latest',{}).get('sofr_deviation_from_ma', 'N/A')}"
+        )
+
+    def get_decision(self, decision_date: str, market_snapshot: Dict[str, Any], stress_index_value: float, stress_index_trend: str) -> Optional[AIDecisionModel]:
+        if not self.is_configured:
+            self.logger.debug("AI Agent not configured, skipping get_decision call.")
+            return None
+
+        prompt_template = self.get_decision_prompt_template()
+        market_data_summary_str = self.format_market_data_for_prompt(market_snapshot)
+
+        prompt = prompt_template.format(
+            decision_date=decision_date,
+            market_data_summary=market_data_summary_str,
+            stress_index_value=stress_index_value,
+            stress_index_trend=stress_index_trend
+        )
+        self.logger.debug(f"Generated AI prompt for date {decision_date}:\n{prompt}")
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-API-Key": self.api_key, # Common for many APIs
+            "Authorization": f"Bearer {self.api_key}", # Common for OpenAI, Anthropic might use x-api-key
+            # Anthropic specific headers (if using Anthropic)
+            "anthropic-version": "2023-06-01"
+        }
+        # Construct payload based on common LLM API structures (e.g., OpenAI, Anthropic)
+        # This is a generic example, might need adjustment for specific API
+        payload = {
+            "model": self.default_model,
+            "max_tokens": 500, # Max tokens for the response
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            # "temperature": 0.7, # Optional: for creativity vs determinism
+        }
+        # If using Anthropic, the payload structure for messages is slightly different for system prompts,
+        # but for a user message like this, it's similar.
+        # Anthropic payload example:
+        # payload = {
+        #     "model": self.default_model,
+        #     "max_tokens": 500,
+        #     "messages": [{"role": "user", "content": prompt}],
+        #     "system": "You are a financial analyst providing bond trading strategies." # Optional system prompt
+        # }
+
+
+        raw_response_text = None
+        for attempt in range(self.max_retries):
+            try:
+                response = requests.post(self.api_endpoint, headers=headers, json=payload, timeout=30)
+                response.raise_for_status()
+
+                response_data = response.json()
+                self.logger.debug(f"Raw AI JSON response: {response_data}")
+
+                # Extract content based on common API response patterns (OpenAI/Anthropic)
+                # This part is highly dependent on the specific AI provider's response structure.
+                # Assuming a structure where the main text is in response_data['choices'][0]['message']['content'] (OpenAI)
+                # or response_data['content'][0]['text'] (Anthropic)
+
+                ai_response_content = None
+                if 'choices' in response_data and response_data['choices']: # OpenAI like
+                    ai_response_content = response_data['choices'][0].get('message', {}).get('content')
+                elif 'content' in response_data and isinstance(response_data['content'], list) and response_data['content']: # Anthropic like
+                    ai_response_content = response_data['content'][0].get('text')
+
+                if not ai_response_content:
+                    self.logger.error(f"Could not extract AI content from response for date {decision_date}. Response structure not recognized. Full response: {response_data}")
+                    raw_response_text = json.dumps(response_data) # Store raw response if extraction fails
+                    return None # Or attempt retry if appropriate
+
+                raw_response_text = ai_response_content # Store the extracted text part
+                self.logger.info(f"Successfully received AI response for date {decision_date}.")
+                self.logger.debug(f"Extracted AI response content for parsing: {raw_response_text}")
+
+                # Attempt to parse the AI's response content (which should be JSON)
+                try:
+                    # The AI is asked to output JSON directly.
+                    # We need to find the JSON block if there's any surrounding text.
+                    # A simple heuristic: find first '{' and last '}'
+                    json_start_index = raw_response_text.find('{')
+                    json_end_index = raw_response_text.rfind('}')
+                    if json_start_index != -1 and json_end_index != -1 and json_start_index < json_end_index:
+                        json_str_to_parse = raw_response_text[json_start_index : json_end_index+1]
+                        self.logger.debug(f"Attempting to parse JSON from AI response: {json_str_to_parse}")
+                        decision_data = json.loads(json_str_to_parse)
+
+                        # Add raw_ai_response to the data before validation
+                        decision_data['raw_ai_response'] = raw_response_text
+
+                        validated_decision = AIDecisionModel(**decision_data)
+                        return validated_decision
+                    else:
+                        self.logger.error(f"Could not find valid JSON block in AI response for date {decision_date}. Response: {raw_response_text}")
+                        # Store raw response text in a way that indicates parsing failure
+                        # This might be done by returning a special error object or logging appropriately.
+                        # For now, returning None after logging.
+                        return None
+
+
+                except json.JSONDecodeError as e_json:
+                    self.logger.error(f"Failed to decode AI response JSON for date {decision_date}: {e_json}. Response text: {raw_response_text}", exc_info=True)
+                    return None
+                except ValidationError as e_val:
+                    self.logger.error(f"AI response validation failed for date {decision_date}: {e_val}. Data: {decision_data if 'decision_data' in locals() else 'N/A'}", exc_info=True)
+                    return None
+
+            except requests.exceptions.HTTPError as e_http:
+                self.logger.warning(f"HTTP error from AI service on attempt {attempt + 1}/{self.max_retries} for date {decision_date}: {e_http.response.status_code if e_http.response else 'N/A'}")
+                if e_http.response is not None:
+                    self.logger.warning(f"AI service error response content: {e_http.response.text[:500]}") # Log part of error response
+                    raw_response_text = e_http.response.text # Store error response
+                if attempt == self.max_retries - 1:
+                    self.logger.error(f"Final attempt failed for AI service call for date {decision_date} with HTTPError: {e_http}")
+                    # Optionally, return a dummy/error AIDecisionModel with raw_ai_response populated
+                    return None
+            except Exception as e_gen:
+                self.logger.error(f"Generic error during AI service call on attempt {attempt + 1}/{self.max_retries} for date {decision_date}: {e_gen}", exc_info=True)
+                raw_response_text = str(e_gen) # Store error string
+                if attempt == self.max_retries - 1:
+                    self.logger.error(f"Final attempt failed for AI service call for date {decision_date} with generic error.")
+                    return None
+
+            self.logger.info(f"Retrying AI service call for date {decision_date} in {self.retry_delay} seconds...")
+            time.sleep(self.retry_delay)
+
+        self.logger.error(f"All retries failed for AI service call for date {decision_date}.")
+        # Return a model with the last raw response if available, or just None
+        if raw_response_text:
+             # This path might not be hit if all retries fail before raw_response_text is set.
+             # Consider how to signal "retries exhausted" vs "parsing failed".
+             # For now, if we reach here, it implies all retries failed to get a *successful* parseable response.
+             # We could create a dummy AIDecisionModel indicating failure.
+             # Example: return AIDecisionModel(decision_date=decision_date, strategy_summary="AI_CALL_FAILED", key_factors=["Retries exhausted"], confidence_score=0.0, raw_ai_response=raw_response_text)
+             # But the current design expects Optional[AIDecisionModel], so None is appropriate for failure.
+             pass # Fall through to return None
+        return None
+
+if __name__ == '__main__':
+    # Basic test for RemoteAIAgent
+    # This requires a valid project_config.yaml structure in the same directory or accessible path.
+    # For atomic script, config is created by run_prototype.sh.
+
+    # Setup basic logging for test execution
+    if not logging.getLogger().hasHandlers():
+        logging.basicConfig(level=logging.DEBUG,
+                            format='%(asctime)s - %(name)s [%(levelname)s] - %(module)s.%(funcName)s:%(lineno)d - %(message)s',
+                            handlers=[logging.StreamHandler(sys.stdout)])
+
+    test_logger_ai = logging.getLogger("AIAgentTestRun_Atomic")
+    if not test_logger_ai.handlers:
+        ch_ai = logging.StreamHandler(sys.stdout)
+        ch_ai.setFormatter(logging.Formatter('%(asctime)s - %(name)s [%(levelname)s] - %(message)s'))
+        test_logger_ai.addHandler(ch_ai)
+        test_logger_ai.propagate = False
+
+    # Create a dummy config for testing
+    # In a real scenario, this would be loaded from src/configs/project_config.yaml by main.py
+    # For this direct test, we simulate it.
+    # IMPORTANT: Replace with a real (test) API key and endpoint if you want to make actual calls.
+    # DO NOT COMMIT REAL PRODUCTION KEYS.
+    dummy_config_for_test = {
+        "ai_service": {
+            "api_key": os.getenv("TEST_ANTHROPIC_API_KEY", "YOUR_API_KEY_HERE"), # Use env var for testing if available
+            "api_endpoint": os.getenv("TEST_ANTHROPIC_API_ENDPOINT", "https://api.anthropic.com/v1/messages"),
+            "default_model": "claude-3-haiku-20240307", # Use a cheaper/faster model for testing
+            "max_retries": 1,
+            "retry_delay_seconds": 1,
+            "api_call_delay_seconds": 0.1
+        }
+        # ... other config sections like database, etc., if RemoteAIAgent needed them directly
+    }
+
+    # Check if a test key is actually provided via environment, otherwise tests will be skipped or use placeholder.
+    if dummy_config_for_test["ai_service"]["api_key"] == "YOUR_API_KEY_HERE":
+        test_logger_ai.warning("Test AI API key not found in TEST_ANTHROPIC_API_KEY env var. AI calls will use placeholder and likely fail if not mocked.")
+        # To run a real test, set TEST_ANTHROPIC_API_KEY and optionally TEST_ANTHROPIC_API_ENDPOINT in your environment.
+        # For CI/CD or automated tests, these should be mocked.
+
+    test_logger_ai.info("--- Starting RemoteAIAgent Test ---")
+    ai_agent_test = RemoteAIAgent(config=dummy_config_for_test, logger_instance=test_logger_ai)
+
+    if not ai_agent_test.is_configured:
+        test_logger_ai.warning("AI Agent not configured (API key likely missing/placeholder). Skipping actual API call test.")
+    else:
+        test_logger_ai.info("AI Agent is configured. Attempting a test API call.")
+        sample_market_snapshot = {
+            "briefing_date": "2023-10-26",
+            "dealer_stress_index": {"current_value_description": "35.00 (正常)", "trend_approximation": "穩定"},
+            "key_financial_components_latest": [
+                {"component_name": "MOVE Index", "value_string": "120.0"},
+                {"component_name": "10Y-2Y Spread", "value_string": "-50 bps"}
+            ],
+            "broader_market_context_latest": {"vix_index (Equity Mkt Volatility)": "18.0", "sofr_deviation_from_ma": "0.01"}
+        }
+        decision_result = ai_agent_test.get_decision(
+            decision_date="2023-10-26",
+            market_snapshot=sample_market_snapshot,
+            stress_index_value=35.00,
+            stress_index_trend="穩定"
+        )
+
+        if decision_result:
+            test_logger_ai.info(f"AI Decision Received: {decision_result.model_dump_json(indent=2)}")
+            assert decision_result.decision_date == "2023-10-26"
+            assert 0.0 <= decision_result.confidence_score <= 1.0
+        else:
+            test_logger_ai.error("AI Agent test call failed to return a valid decision.")
+            test_logger_ai.info("This is expected if API key is a placeholder or invalid, or if the test endpoint/model is not reachable/correct.")
+
+    test_logger_ai.info("--- RemoteAIAgent Test Finished ---")
 EOF
 
 # === 階段三：依賴安裝 ===
