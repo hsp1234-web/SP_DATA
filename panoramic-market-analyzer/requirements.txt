@@ -3,5 +3,6 @@ yfinance
 duckdb
 pandas
 
-# 測試套件
+# 測試與品質保證套件
 pytest
+flake8
