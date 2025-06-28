@@ -1,0 +1,7 @@
+# 核心套件
+yfinance
+duckdb
+pandas
+
+# 測試套件
+pytest
